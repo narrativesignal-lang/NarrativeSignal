@@ -9,6 +9,12 @@ out/
 .env
 .env.local
 .env.*.local
+*.env
+
+# DB dumps & archives (never commit backups or secrets)
+*.sql
+*.dump
+*.tar.gz
 
 # Python
 __pycache__/
