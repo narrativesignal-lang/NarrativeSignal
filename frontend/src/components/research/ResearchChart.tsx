@@ -1,0 +1,135 @@
+"use client";
+
+import dynamic from "next/dynamic";
+
+const Research3DViewer = dynamic(
+  () => import("./Research3DViewer").then((m) => ({ default: m.Research3DViewer })),
+  { ssr: false }
+);
+
+export const CHART_TYPES = [
+  "asset_price",
+  "sentiment",
+  "momentum",
+  "coverage",
+  "custom_index",
+  "three_d",
+  "three_d_narrative",
+  "three_d_derivative",
+  "institution_bias",
+  "rating_distribution",
+] as const;
+
+export type ChartType = (typeof CHART_TYPES)[number];
+
+export const CHART_LABELS: Record<ChartType, string> = {
+  asset_price: "Asset price",
+  sentiment: "Sentiment",
+  momentum: "Momentum",
+  coverage: "Coverage",
+  custom_index: "Custom index",
+  three_d: "3D",
+  three_d_narrative: "3D Narrative Space",
+  three_d_derivative: "3D Derivative Space",
+  institution_bias: "Institution bias",
+  rating_distribution: "Rating distribution",
+};
+
+export type ResearchChartProps = {
+  type: ChartType;
+  hasContext?: boolean;
+  onRemove?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+};
+
+function is3DType(t: ChartType): t is "three_d" | "three_d_narrative" | "three_d_derivative" {
+  return t === "three_d" || t === "three_d_narrative" || t === "three_d_derivative";
+}
+
+function isComingUpType(t: ChartType): t is "institution_bias" | "rating_distribution" {
+  return t === "institution_bias" || t === "rating_distribution";
+}
+
+export function ResearchChart({ type, hasContext = false, onRemove, onMoveUp, onMoveDown }: ResearchChartProps) {
+  if (isComingUpType(type)) {
+    return (
+      <div className="relative flex h-full min-h-[120px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
+        <span className="rounded bg-slate-700/60 px-2 py-1 text-xs font-medium text-slate-400">
+          Coming up
+        </span>
+        <p className="mt-2 text-sm text-slate-300">{CHART_LABELS[type]}</p>
+        <p className="mt-1 text-xs text-slate-500">
+          This block type will be available in a future update.
+        </p>
+        <div className="absolute right-2 top-2 flex gap-1">
+          {onMoveUp && <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">↑</button>}
+          {onMoveDown && <button type="button" onClick={onMoveDown} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move down">↓</button>}
+          {onRemove && <button type="button" onClick={onRemove} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300" title="Remove">×</button>}
+        </div>
+      </div>
+    );
+  }
+  if (is3DType(type)) {
+    const variant = type === "three_d_derivative" ? "derivative" : "narrative";
+    return (
+      <Research3DViewer
+        variant={variant}
+        hasContext={hasContext}
+        onRemove={onRemove}
+        onMoveUp={onMoveUp}
+        onMoveDown={onMoveDown}
+      />
+    );
+  }
+
+  return (
+    <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+        <div className="flex items-center gap-0.5">
+          {onMoveUp && (
+            <button
+              type="button"
+              onClick={onMoveUp}
+              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+              title="Move up"
+            >
+              ↑
+            </button>
+          )}
+          {onMoveDown && (
+            <button
+              type="button"
+              onClick={onMoveDown}
+              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+              title="Move down"
+            >
+              ↓
+            </button>
+          )}
+          {onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300"
+              title="Remove block"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 flex flex-1 flex-col items-center justify-center gap-1 rounded bg-slate-800/40 p-3 text-center text-sm text-slate-500">
+        {hasContext ? (
+          "Block placeholder — same-timeline series will render here when data is available."
+        ) : (
+          <>
+            <span className="font-medium text-amber-200/90">No research target configured</span>
+            <span className="text-xs">Set instruments or target in Research Universe above.</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

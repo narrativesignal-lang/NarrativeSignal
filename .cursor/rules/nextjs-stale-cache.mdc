@@ -1,0 +1,26 @@
+---
+description: Next.js stale .next cache / missing webpack chunks (e.g. Cannot find module './819.js')
+globs: frontend/**/*
+alwaysApply: false
+---
+
+# Next.js “Cannot find module './NNN.js'” / Server Error from `.next`
+
+These errors come from **stale or partial `frontend/.next`** (common with Docker bind mounts: `./frontend:/app`).
+
+## Repo defaults (already configured — do not skip verification)
+
+- **`npm run dev`** runs **`npm run clean`** first; **`clean`** is **best-effort** (never exits with failure — skips locked `.next` on Docker/Windows so dev still starts).
+- **`npm run build`** runs **`prebuild`** → **`npm run clean`** automatically before `next build`.
+- Docker Compose `frontend` uses `npm run dev` after `npm install`.
+
+## When you change `frontend/` (deps, routes, imports, new packages)
+
+1. Prefer **`cd frontend && npm run build`** to verify types/build — clean runs via `prebuild`.
+2. If the user only runs dev and hits chunk errors: **`cd frontend && npm run clean`** then restart dev (normally unnecessary if they use `npm run dev`).
+
+## When the user reports this error
+
+`cd frontend && npm run clean`, then `npm run dev` or `docker compose up frontend`.
+
+Do **not** commit `.next`; it stays gitignored.

@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+/* Landing page animated background */
+@keyframes landing-gradient-shift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes landing-ticker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes landing-ticker-rtl {
+  0% {
+    transform: translateX(-50%);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes landing-terminal-float {
+  0%, 100% {
+    opacity: 0.4;
+    transform: translateY(0) translateX(0);
+  }
+  33% {
+    opacity: 0.7;
+    transform: translateY(-4px) translateX(2px);
+  }
+  66% {
+    opacity: 0.5;
+    transform: translateY(2px) translateX(-2px);
+  }
+}
+
+.landing-gradient-shift {
+  background: radial-gradient(
+    ellipse 80% 80% at 50% 50%,
+    rgba(59, 130, 246, 0.08) 0%,
+    rgba(99, 102, 241, 0.04) 40%,
+    transparent 70%
+  );
+  background-size: 200% 200%;
+  animation: landing-gradient-shift 20s ease-in-out infinite;
+}
+
+.landing-ticker-wrapper {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 10%,
+    black 90%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 10%,
+    black 90%,
+    transparent 100%
+  );
+}
+
+.landing-ticker {
+  animation: landing-ticker 22s linear infinite;
+}
+
+.landing-ticker-rtl {
+  animation: landing-ticker-rtl 25s linear infinite;
+}
+
+/* 顶部显眼滚动条 */
+.header-ticker {
+  animation: landing-ticker 18s linear infinite;
+}
+
+.landing-terminal {
+  animation: landing-terminal-float 12s ease-in-out infinite;
+}
+
+.landing-terminal-2 {
+  animation-delay: -2s;
+}
+
+.landing-terminal-3 {
+  animation-delay: -4s;
+}
+
+.landing-terminal-4 {
+  animation-delay: -6s;
+}
+
+.landing-terminal-5 {
+  animation-delay: -8s;
+}
+
+.landing-terminal-6 {
+  animation-delay: -10s;
+}
+
+.landing-terminal-7 {
+  animation-delay: -3s;
+}
+
+.landing-terminal-8 {
+  animation-delay: -7s;
+}
+
+.landing-sparkline path {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: landing-sparkline-draw 8s ease-in-out infinite;
+}
+
+.landing-sparkline.landing-sparkline-delay path {
+  animation-delay: 0s;
+}
+
+.landing-sparkline.landing-sparkline-delay-2 path {
+  animation-delay: -3s;
+}
+
+.landing-sparkline.landing-sparkline-delay-3 path {
+  animation-delay: -5s;
+}
+
+@keyframes landing-sparkline-draw {
+  0% {
+    stroke-dashoffset: 100;
+  }
+  20% {
+    stroke-dashoffset: 0;
+  }
+  80% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -100;
+  }
+}
+

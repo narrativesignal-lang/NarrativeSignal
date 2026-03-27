@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+.cache/
+
+# Testing / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Misc
+*.bak
+*.orig
