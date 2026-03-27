@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.db.init_db import init_db
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.response_cache import ResponseCacheMiddleware
 
 
 app = FastAPI(title="AI Narrative & Sentiment Investing Platform", version="0.1.0")
@@ -16,9 +17,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Macro-News-Source", "X-Macro-News-Stale", "X-Cache", "X-Cache-Stale"],
 )
 # Inner layer (runs after CORS on the way in) — 429 responses still get CORS headers.
 app.add_middleware(RateLimitMiddleware)
+# Response cache: GET /api coalescing + stale fallback (inner — closest to routes).
+app.add_middleware(ResponseCacheMiddleware)
 
 
 # Dev/internal bootstrap: permanent admin test account (change/remove for production).
@@ -33,11 +37,11 @@ def _startup() -> None:
     # Seed instruments whenever the table is empty (safe in all envs)
     _seed_instruments_if_empty()
     _ensure_local_instruments()
-    # Warm market quote snapshots asynchronously (Celery also runs on a schedule)
+    # Background core-data warmup: default indices OHLCV/quotes + macro news DB rows (non-blocking).
     try:
-        from app.worker.tasks import refresh_market_quotes
+        from app.services.core_data_warmup import start_core_data_warmup_background
 
-        refresh_market_quotes.delay()
+        start_core_data_warmup_background()
     except Exception:
         pass
 

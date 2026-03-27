@@ -25,6 +25,7 @@ from app.models.targets import Entity, MacroDataSource
 from app.models.user import User
 from app.models.community import CommunitySubmission, CommunityDataRequest
 from app.models.macro_index import MacroIndex
+from app.models.macro_news_list_snapshot import MacroNewsListSnapshot
 
 __all__ = [
     "UserDataSubscription",
@@ -62,5 +63,7 @@ __all__ = [
     "Instrument",
     "CommunitySubmission",
     "CommunityDataRequest",
+    "MacroIndex",
+    "MacroNewsListSnapshot",
 ]
 

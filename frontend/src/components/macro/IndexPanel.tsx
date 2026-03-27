@@ -1,7 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { IndexCard } from "./IndexCard";
+import { api, parseApiError } from "@/lib/api";
+import { STALE_MARKET_MS } from "@/lib/queryClient";
 
 /** Response shape from GET /api/market/indices?category=... */
 type IndexRow = {
@@ -12,42 +16,33 @@ type IndexRow = {
   /** From market_quote_snapshots: last fetch failed but previous value kept */
   stale?: boolean;
   last_updated_at?: string | null;
+  data_source?: string;
 };
 
 const MAX_ITEMS_PER_CATEGORY = 10;
 
 export function IndexPanel({ category }: { category: string }) {
-  const [indices, setIndices] = useState<IndexRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [assetType, setAssetType] = useState("index");
 
-  const fetchIndices = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/market/indices?category=${encodeURIComponent(category)}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const json = (await res.json()) as IndexRow[] | { data?: IndexRow[] };
-      const data = Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
-      setIndices(data);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load indices");
-    } finally {
-      setLoading(false);
-    }
-  }, [category]);
+  const q = useQuery({
+    queryKey: ["market", "indices", category],
+    queryFn: () => api.marketIndices(category),
+    staleTime: STALE_MARKET_MS,
+    gcTime: 45 * 60 * 1000
+  });
 
-  useEffect(() => {
-    fetchIndices();
-    const id = setInterval(fetchIndices, 30_000);
-    return () => clearInterval(id);
-  }, [fetchIndices]);
+  const indices: IndexRow[] = Array.isArray(q.data?.data) ? q.data!.data : [];
+  const top = q.data;
+  const loading = q.isLoading && indices.length === 0;
+  const showPrep =
+    top?.loading_state === "warming" ||
+    top?.loading_state === "placeholder" ||
+    top?.data_source === "placeholder";
 
   const handleAdd = useCallback(
     async (e: React.FormEvent) => {
@@ -55,31 +50,26 @@ export function IndexPanel({ category }: { category: string }) {
       if (!name.trim() || !symbol.trim()) return;
       setError(null);
       try {
-        const res = await fetch("/api/market/indices", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            category,
-            name: name.trim(),
-            symbol: symbol.trim(),
-            asset_type: assetType,
-          }),
+        await api.addMarketIndex({
+          category,
+          name: name.trim(),
+          symbol: symbol.trim(),
+          asset_type: assetType
         });
-        if (!res.ok) throw new Error(await res.text());
         setName("");
         setSymbol("");
         setAssetType("index");
         setModalOpen(false);
-        fetchIndices();
-      } catch (e: any) {
-        setError(e?.message || "Failed to add index");
+        await queryClient.invalidateQueries({ queryKey: ["market", "indices", category] });
+      } catch (e2: unknown) {
+        setError(parseApiError(e2));
       }
     },
-    [category, name, symbol, assetType, fetchIndices]
+    [category, name, symbol, assetType, queryClient]
   );
 
   const atLimit = indices.length >= MAX_ITEMS_PER_CATEGORY;
+  const msg = error || (q.isError ? parseApiError(q.error) : null);
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
@@ -95,19 +85,40 @@ export function IndexPanel({ category }: { category: string }) {
           + Add Data
         </button>
       </div>
-      {error ? (
+      {msg ? (
         <div className="mt-2 rounded border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-200">
-          {error}
+          {msg}
+        </div>
+      ) : null}
+      {top?.message && showPrep ? (
+        <div className="mt-2 rounded border border-sky-900/50 bg-sky-950/30 px-2 py-1.5 text-[11px] leading-snug text-sky-100/90">
+          {top.message}
+        </div>
+      ) : null}
+      {top?.data_source === "stale_fallback" &&
+      !showPrep &&
+      top?.data_updated_at ? (
+        <div className="mt-1 text-[10px] text-slate-500">
+          <span className="text-amber-200/80">Stale</span> · updated{" "}
+          {new Date(top.data_updated_at).toLocaleString()}
         </div>
       ) : null}
       <div className="mt-2 flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-auto">
-        {loading && indices.length === 0 ? (
-          <div className="text-xs text-slate-400">Loading…</div>
+        {loading ? (
+          <div className="animate-pulse space-y-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-14 rounded-lg bg-slate-800/60" />
+            ))}
+          </div>
         ) : (
           indices.map((item) => {
             const priceStr = item.price != null ? item.price.toFixed(2) : "--";
-            const dataSource =
-              item.stale ? "cached" : item.last_updated_at ? "live" : undefined;
+            const rowDs = item.data_source;
+            let dataSource: "live" | "cached" | "fallback" | "stale" | "placeholder" | undefined;
+            if (rowDs === "placeholder" || (!item.last_updated_at && item.price == null)) dataSource = "placeholder";
+            else if (rowDs === "stale_fallback") dataSource = "stale";
+            else if (item.stale) dataSource = "stale";
+            else dataSource = undefined;
             return (
               <IndexCard
                 key={`${item.name}-${item.symbol}`}
@@ -120,7 +131,9 @@ export function IndexPanel({ category }: { category: string }) {
                     ? `Updated ${item.last_updated_at}${item.stale ? " (stale)" : ""}`
                     : item.stale
                       ? "Stale — last fetch failed; showing last known quote"
-                      : undefined
+                      : rowDs === "placeholder"
+                        ? "Quote not yet available for this symbol"
+                        : undefined
                 }
               />
             );

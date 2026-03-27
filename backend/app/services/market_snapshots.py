@@ -2,16 +2,88 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+import redis
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.data_subscription import MarketQuoteSnapshot, OhlcvSnapshot
+from app.core.config import settings
+from app.models.data_subscription import MarketQuoteSnapshot, OhlcvSnapshot, UserDataSubscription
 from app.services.cache_fallback import merge_quote_row, utcnow
+from app.services.external_api_stats import bump as bump_external
 from app.services.market.service import fetch_quote, get_ohlcv
 
 logger = logging.getLogger(__name__)
+
+QUOTE_LAST_GOOD_PREFIX = "market:quote:last_good:v1:"
+QUOTE_LAST_GOOD_TTL_SEC = 86400 * 14
+
+
+def _quotes_r() -> redis.Redis:
+    return redis.from_url(settings.redis_url, decode_responses=True)
+
+
+def cache_last_good_quote(
+    symbol: str,
+    price: float,
+    change_percent: float | None,
+    *,
+    updated_at_iso: str,
+) -> None:
+    sym = (symbol or "").strip().upper()
+    if not sym or price is None:
+        return
+    try:
+        payload = json.dumps(
+            {"price": float(price), "change_percent": change_percent, "updated_at": updated_at_iso},
+            default=str,
+        )
+        _quotes_r().setex(QUOTE_LAST_GOOD_PREFIX + sym, QUOTE_LAST_GOOD_TTL_SEC, payload)
+    except Exception as e:
+        logger.debug("cache_last_good_quote %s: %s", sym, e)
+
+
+def load_last_good_quote(symbol: str) -> dict | None:
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    try:
+        raw = _quotes_r().get(QUOTE_LAST_GOOD_PREFIX + sym)
+        if not raw:
+            return None
+        o = json.loads(raw)
+        if not isinstance(o, dict) or o.get("price") is None:
+            return None
+        return {
+            "price": float(o["price"]),
+            "change_percent": float(o["change_percent"]) if o.get("change_percent") is not None else None,
+            "updated_at_iso": str(o.get("updated_at") or ""),
+        }
+    except Exception as e:
+        logger.debug("load_last_good_quote %s: %s", sym, e)
+        return None
+
+
+def collect_symbols_for_scheduled_market_refresh(db: Session) -> set[str]:
+    """
+    Symbols to refresh on Celery: V1 core + default macro indices + active market_quote targets.
+    """
+    from app.services.market_indices_config import core_and_default_symbols
+
+    syms = core_and_default_symbols()
+    for tid in db.scalars(
+        select(UserDataSubscription.target_id).where(
+            UserDataSubscription.source_type == "market_quote",
+            UserDataSubscription.is_active.is_(True),
+        )
+    ).all():
+        t = str(tid).strip().upper()
+        if t:
+            syms.add(t)
+    return syms
 
 
 def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
@@ -26,6 +98,7 @@ def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
     new_c: float | None = None
     try:
         q = fetch_quote(sym)
+        bump_external("yahoo_quote", 1)
         new_p = q.get("price")
         new_c = q.get("change_percent")
         if new_p is not None:
@@ -57,11 +130,18 @@ def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
         if snap.last_success_at is None and merged_p is None:
             snap.last_error = err or "no price"
 
+    if merged_p is not None:
+        try:
+            ts = (snap.last_success_at or attempt).isoformat()
+            cache_last_good_quote(sym, float(merged_p), merged_c, updated_at_iso=ts)
+        except Exception:
+            logger.debug("cache_last_good_quote after upsert failed", exc_info=True)
+
     return snap
 
 
 # Periods we cache for OHLCV (aligned with frontend 1D, 5D, 1M, 6M, 1Y, MAX)
-_OHLCV_PERIODS = ("1D", "5D", "1M", "6M", "1Y", "MAX")
+OHLCV_CACHE_PERIODS: tuple[str, ...] = ("1D", "5D", "1M", "6M", "1Y", "MAX")
 
 
 def _bar_to_dict(bar) -> dict:
@@ -87,7 +167,7 @@ def upsert_ohlcv_from_fetch(db: Session, symbol: str, period: str = "1M") -> Ohl
     if not sym:
         raise ValueError("symbol required")
     p = (period or "1M").upper()
-    if p not in _OHLCV_PERIODS:
+    if p not in OHLCV_CACHE_PERIODS:
         p = "1M"
     key = f"{sym}:{p}"
     snap = db.get(OhlcvSnapshot, key)
@@ -96,6 +176,7 @@ def upsert_ohlcv_from_fetch(db: Session, symbol: str, period: str = "1M") -> Ohl
     bars_list: list[dict] = []
     try:
         raw_bars = get_ohlcv(symbol=sym, period=p)
+        bump_external("market_ohlcv", 1)
         bars_list = [_bar_to_dict(b) for b in raw_bars]
     except Exception as e:
         err = str(e)[:2000]
@@ -125,7 +206,7 @@ def resolve_ohlcv_bars(
     db: Session, symbol: str, period: str = "1M"
 ) -> tuple[list[dict], OhlcvSnapshot | None, bool]:
     """
-    Single source of truth for GET /market/ohlcv and batch: read snapshot, fetch on empty, commit/rollback.
+    Read persisted OHLCV only (GET /market/ohlcv). Celery refresh_market_ohlcv_snapshots fills snapshots.
     Returns (bars_json_list, snapshot_or_none, stale).
     """
     sym = (symbol or "").strip().upper()
@@ -134,20 +215,9 @@ def resolve_ohlcv_bars(
     snap = db.get(OhlcvSnapshot, key)
     bars = ((snap.bars or {}).get("bars", []) if snap and snap.bars else [])
 
-    if not bars:
-        try:
-            upsert_ohlcv_from_fetch(db, sym, p)
-            db.commit()
-            snap = db.get(OhlcvSnapshot, key)
-            bars = ((snap.bars or {}).get("bars", []) if snap and snap.bars else [])
-        except Exception:
-            db.rollback()
-            snap = db.get(OhlcvSnapshot, key)
-            bars = ((snap.bars or {}).get("bars", []) if snap and snap.bars else [])
-
-    stale = True
-    if snap:
-        stale = bool(snap.is_stale)
+    if snap is None:
+        return bars, None, True
+    stale = bool(snap.is_stale) or not bars
     return bars, snap, stale
 
 
@@ -167,27 +237,45 @@ def read_snapshot_rows_for_indices(db: Session, items: list[dict]) -> list[dict]
         snap = db.get(MarketQuoteSnapshot, sym)
         if snap:
             lu = snap.last_success_at.isoformat() if snap.last_success_at else None
+            row_stale = bool(snap.is_stale) or not lu
+            row_ds = "stale_fallback" if row_stale else "snapshot"
             out.append(
                 {
                     "name": name,
                     "symbol": sym,
                     "price": snap.price,
                     "change_percent": snap.change_percent,
-                    "stale": bool(snap.is_stale),
+                    "stale": row_stale,
                     "last_updated_at": lu,
+                    "data_source": row_ds,
                 }
             )
         else:
-            out.append(
-                {
-                    "name": name,
-                    "symbol": sym,
-                    "price": None,
-                    "change_percent": None,
-                    "stale": True,
-                    "last_updated_at": None,
-                }
-            )
+            fb = load_last_good_quote(sym)
+            if fb and fb.get("updated_at_iso"):
+                out.append(
+                    {
+                        "name": name,
+                        "symbol": sym,
+                        "price": fb["price"],
+                        "change_percent": fb["change_percent"],
+                        "stale": True,
+                        "last_updated_at": fb["updated_at_iso"] or None,
+                        "data_source": "stale_fallback",
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "name": name,
+                        "symbol": sym,
+                        "price": None,
+                        "change_percent": None,
+                        "stale": True,
+                        "last_updated_at": None,
+                        "data_source": "placeholder",
+                    }
+                )
     return out
 
 
@@ -221,3 +309,19 @@ def rows_for_indices(db: Session, items: list[dict]) -> list[dict]:
         db.rollback()
         logger.exception("commit market snapshots failed")
     return out
+
+
+def schedule_market_snapshot_refresh_for_symbols(symbols: list[str]) -> None:
+    """
+    Enqueue async quote + OHLCV refresh for symbols (Celery). Safe no-op if broker unavailable.
+    Does not block HTTP handlers.
+    """
+    syms = sorted({(s or "").strip().upper() for s in (symbols or []) if (s or "").strip()})
+    if not syms:
+        return
+    try:
+        from app.worker.tasks import refresh_market_snapshots_for_symbols
+
+        refresh_market_snapshots_for_symbols.delay(syms)
+    except Exception:
+        logger.debug("schedule_market_snapshot_refresh_for_symbols skipped", exc_info=True)

@@ -9,8 +9,8 @@ export type IndexCardProps = {
   changePercent: number | null;
   /** Optional absolute change for display (e.g. +1.2) */
   change?: number | null;
-  /** If set, show a small subtle "cached" or "fallback" label */
-  dataSource?: "live" | "cached" | "fallback";
+  /** If set, show a small subtle "cached", "fallback", stale, or placeholder label */
+  dataSource?: "live" | "cached" | "fallback" | "stale" | "placeholder";
   /** Optional tooltip on the name row */
   title?: string;
 };
@@ -47,9 +47,23 @@ export function IndexCard({ name, price, changePercent, change, dataSource, titl
         {dataSource && dataSource !== "live" ? (
           <span
             className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-500 bg-slate-800/80"
-            title={dataSource === "cached" ? t("macro.quoteCachedHint") : t("macro.quoteSampleHint")}
+            title={
+              dataSource === "cached"
+                ? t("macro.quoteCachedHint")
+                : dataSource === "fallback"
+                  ? t("macro.quoteSampleHint")
+                  : dataSource === "stale"
+                    ? "Older quote; refresh in progress"
+                    : "Layout placeholder — quote warming up"
+            }
           >
-            {dataSource === "cached" ? t("macro.quoteCached") : t("macro.quoteSample")}
+            {dataSource === "cached"
+              ? t("macro.quoteCached")
+              : dataSource === "fallback"
+                ? t("macro.quoteSample")
+                : dataSource === "stale"
+                  ? "Stale"
+                  : "Prep"}
           </span>
         ) : null}
       </div>

@@ -5,12 +5,14 @@ from typing import Any
 
 from jose import jwt
 from passlib.context import CryptContext
+from passlib.exc import MissingBackendError, UnknownHashError
 
 from app.core.config import settings
 
 
-# Use PBKDF2 for broad compatibility in containers (avoids bcrypt backend issues).
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# PBKDF2 is the default for new hashes (broad compatibility). Bcrypt remains as a
+# secondary scheme so legacy password rows still verify when the bcrypt backend is installed.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
@@ -18,7 +20,12 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    if not password_hash or not isinstance(password_hash, str):
+        return False
+    try:
+        return bool(pwd_context.verify(password, password_hash))
+    except (UnknownHashError, MissingBackendError, ValueError, TypeError):
+        return False
 
 
 def _now() -> datetime:

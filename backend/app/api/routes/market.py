@@ -18,12 +18,35 @@ from app.models.data_subscription import MarketQuoteSnapshot
 from app.services.market_snapshots import (
     read_snapshot_rows_for_indices,
     resolve_ohlcv_bars,
-    upsert_quote_from_fetch,
+    schedule_market_snapshot_refresh_for_symbols,
 )
 from app.services.subscriptions import register_instrument_quote_subscription
+from app.services.core_data_diag import record_cold_empty, record_first_paint_envelope, record_snapshot_hit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _data_source_from_stale(stale: bool) -> str:
+    return "stale_fallback" if stale else "snapshot"
+
+
+def _indices_top_envelope(rows: list[dict]) -> tuple[str, str, str | None, bool]:
+    """Top-level data_source, loading_state, optional message, aggregate stale."""
+    if not rows:
+        return "placeholder", "placeholder", "No indices configured for this category yet.", True
+    sources = [str(r.get("data_source") or "snapshot") for r in rows]
+    all_ph = all(s == "placeholder" for s in sources)
+    any_ph = any(s == "placeholder" for s in sources)
+    any_stale = any(r.get("stale") for r in rows)
+    any_sf = any(s == "stale_fallback" for s in sources)
+    if all_ph:
+        return "placeholder", "placeholder", "Quotes are warming; placeholder rows keep layout stable.", True
+    if any_ph:
+        return "stale_fallback", "warming", "Some symbols are still loading; last-known quotes or placeholders shown.", True
+    if any_sf or any_stale:
+        return "stale_fallback", "stale", None, True
+    return "snapshot", "ready", None, False
 
 
 @router.get("/quote")
@@ -33,18 +56,26 @@ def quote(symbol: str = Query(..., min_length=1, max_length=30), db: Session = D
     snap = db.get(MarketQuoteSnapshot, sym)
     if not snap:
         payload = {"symbol": sym, "price": None, "change_percent": None}
+        record_snapshot_hit("market_quote_empty")
         return {
             "data": payload,
             "last_updated_at": None,
+            "data_updated_at": None,
+            "data_source": "stale_fallback",
             "stale": True,
             **payload,
         }
+    record_snapshot_hit("market_quote")
+    st = bool(snap.is_stale)
     payload = {"symbol": sym, "price": snap.price, "change_percent": snap.change_percent}
+    lu = snap.last_success_at.isoformat() if snap.last_success_at else None
     return {
         "data": payload,
         **payload,
-        "stale": bool(snap.is_stale),
-        "last_updated_at": snap.last_success_at.isoformat() if snap.last_success_at else None,
+        "stale": st,
+        "last_updated_at": lu,
+        "data_updated_at": lu,
+        "data_source": _data_source_from_stale(st),
     }
 
 
@@ -63,16 +94,20 @@ def ohlcv(
     sym = symbol.upper()
     p = period.upper() if period else "1M"
     bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+    record_snapshot_hit("market_ohlcv")
     payload = {
         "symbol": sym,
         "period": p,
         "provider": (provider or "snapshot"),
         "bars": bars,
     }
+    lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else None
     return {
         "data": payload,
         **payload,
-        "last_updated_at": snap.last_success_at.isoformat() if snap and snap.last_success_at else None,
+        "last_updated_at": lu,
+        "data_updated_at": lu,
+        "data_source": _data_source_from_stale(stale),
         "stale": stale,
     }
 
@@ -89,18 +124,33 @@ def ohlcv_batch(body: OhlcvBatchBody, db: Session = Depends(get_db)) -> dict:
             seen.add(sym)
             unique_symbols.append(sym)
     items: dict[str, dict] = {}
+    batch_stale = False
+    latest: str | None = None
     for sym in unique_symbols:
         bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+        if stale:
+            batch_stale = True
+        lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else None
+        if lu and (latest is None or lu > latest):
+            latest = lu
         items[sym] = {
             "symbol": sym,
             "period": p,
             "provider": "snapshot",
             "bars": bars,
-            "last_updated_at": snap.last_success_at.isoformat() if snap and snap.last_success_at else None,
+            "last_updated_at": lu,
             "stale": stale,
         }
+    record_snapshot_hit("market_ohlcv_batch")
     payload = {"period": p, "items": items}
-    return {"data": payload, **payload}
+    return {
+        "data": payload,
+        **payload,
+        "last_updated_at": latest,
+        "data_updated_at": latest,
+        "data_source": _data_source_from_stale(batch_stale),
+        "stale": batch_stale,
+    }
 
 
 def _get_redis() -> redis.Redis:
@@ -115,7 +165,8 @@ def get_indices(
 ) -> dict:
     """
     Merge defaults + user indices, then return latest persisted quotes from market_quote_snapshots.
-    Does not hit external providers on this request — Celery refresh_market_quotes keeps snapshots warm.
+    Never calls Yahoo on GET — Celery refresh_market_quotes (15m) keeps snapshots warm; missing rows
+    return nulls with stale until the next refresh.
     """
     # Normalize category for default lookup (frontend may send "General" etc.)
     category_lower = category.strip().lower()
@@ -137,34 +188,45 @@ def get_indices(
     all_items = all_items[:MAX_INDICES_PER_CATEGORY]
 
     if not all_items:
-        return {"data": [], "last_updated_at": None, "stale": True}
+        record_snapshot_hit("market_indices_empty")
+        record_cold_empty("market_indices")
+        record_first_paint_envelope("market_indices", loading_state="placeholder", data_source="placeholder")
+        return {
+            "data": [],
+            "last_updated_at": None,
+            "data_updated_at": None,
+            "data_source": "placeholder",
+            "loading_state": "placeholder",
+            "message": "No indices configured for this category yet.",
+            "stale": True,
+        }
 
     rows = read_snapshot_rows_for_indices(db, all_items)
-
-    # Best-effort live fetch when snapshots are empty (e.g. dev without Celery). Bounded: ≤10 symbols.
-    if any(r.get("price") is None for r in rows):
-        try:
-            for item in all_items:
-                sym = (item.get("symbol") or "").strip().upper()
-                if sym:
-                    upsert_quote_from_fetch(db, sym)
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.exception("lazy quote refresh for indices failed")
-        rows = read_snapshot_rows_for_indices(db, all_items)
+    record_snapshot_hit("market_indices")
 
     last_updated_at = None
-    stale = False
     for r in rows:
         if not r.get("last_updated_at"):
             r["stale"] = True
-        if r.get("stale"):
-            stale = True
         if r.get("last_updated_at"):
             if last_updated_at is None or str(r["last_updated_at"]) > str(last_updated_at):
                 last_updated_at = r["last_updated_at"]
-    return {"data": rows, "last_updated_at": last_updated_at, "stale": stale}
+
+    top_ds, top_ls, top_msg, top_stale = _indices_top_envelope(rows)
+    record_first_paint_envelope("market_indices", loading_state=top_ls, data_source=top_ds)
+    need = [(r.get("symbol") or "") for r in rows if r.get("data_source") == "placeholder"]
+    if need:
+        schedule_market_snapshot_refresh_for_symbols(need)
+
+    return {
+        "data": rows,
+        "last_updated_at": last_updated_at,
+        "data_updated_at": last_updated_at,
+        "data_source": top_ds,
+        "loading_state": top_ls,
+        "message": top_msg,
+        "stale": top_stale,
+    }
 
 
 @router.post("/indices", status_code=status.HTTP_201_CREATED)
@@ -204,11 +266,7 @@ def add_index(
     register_instrument_quote_subscription(db, current_user.id, symbol)
     db.commit()
     db.refresh(mi)
-    try:
-        upsert_quote_from_fetch(db, symbol)
-        db.commit()
-    except Exception:
-        db.rollback()
+    schedule_market_snapshot_refresh_for_symbols([symbol])
     r = _get_redis()
     try:
         r.delete(f"macro_indices_prices:{category}")

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError
 from sqlalchemy import select, func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.api.deps import get_current_user, user_is_admin
 from app.core.security import (
@@ -97,13 +100,31 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     # Single session: increment token_version to invalidate previous sessions
-    user.token_version = getattr(user, "token_version", 0) + 1
-    db.commit()
-    db.refresh(user)
-    ver = getattr(user, "token_version", 0)
+    prev_ver = int(getattr(user, "token_version", 0) or 0)
+    user.token_version = prev_ver + 1
+    try:
+        db.commit()
+        db.refresh(user)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("login: failed to persist token_version")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Login temporarily unavailable. Please try again.",
+        ) from None
 
-    access = create_access_token(subject=user.username, user_id=str(user.id), token_version=ver)
-    refresh = create_refresh_token(subject=user.username, user_id=str(user.id), token_version=ver)
+    ver = int(getattr(user, "token_version", 0) or 0)
+
+    try:
+        access = create_access_token(subject=user.username, user_id=str(user.id), token_version=ver)
+        refresh = create_refresh_token(subject=user.username, user_id=str(user.id), token_version=ver)
+    except Exception:
+        logger.exception("login: failed to issue tokens")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Login temporarily unavailable. Please try again.",
+        ) from None
+
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh,

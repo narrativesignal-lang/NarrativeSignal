@@ -2,6 +2,7 @@ import "./globals.css";
 
 import type { Metadata } from "next";
 
+import { AppQueryProvider } from "@/components/AppQueryProvider";
 import { I18nProvider } from "@/lib/i18n";
 import { UserProvider } from "@/lib/UserContext";
 
@@ -16,7 +17,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-slate-950 text-slate-50">
         <I18nProvider>
           <UserProvider>
-            <div className="min-h-screen">{children}</div>
+            <AppQueryProvider>
+              <div className="min-h-screen">{children}</div>
+            </AppQueryProvider>
           </UserProvider>
         </I18nProvider>
       </body>

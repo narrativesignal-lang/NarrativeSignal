@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -118,6 +119,9 @@ class ComparisonSeriesLine(BaseModel):
 class ComparisonSeriesOut(BaseModel):
     period: str
     series: list[ComparisonSeriesLine]
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    stale: bool = False
 
 
 class KeywordSuggestionRequest(BaseModel):
@@ -143,6 +147,10 @@ class TimeSeriesOut(BaseModel):
     data: list[TimeSeriesPoint] | None = None
     last_updated_at: str | None = None
     stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
 
 
 class QuadrantOut(BaseModel):
@@ -150,6 +158,10 @@ class QuadrantOut(BaseModel):
     coverage_momentum: float
     last_updated_at: str | None = None
     stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
 
 
 class QuadrantHistoryPoint(BaseModel):
@@ -164,6 +176,10 @@ class QuadrantHistoryOut(BaseModel):
     data: list[QuadrantHistoryPoint] | None = None
     last_updated_at: str | None = None
     stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
 
 
 class TrendingOut(BaseModel):
@@ -174,6 +190,10 @@ class TrendingOut(BaseModel):
     trend_label: str  # Rising | Fading | Spike | Neutral
     last_updated_at: str | None = None
     stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
 
 
 class Chart3DPoint(BaseModel):
@@ -198,6 +218,8 @@ class EntityChart3DDataOut(BaseModel):
     last_updated_at: str | None = None
     stale: bool = False
     source_status: Chart3DSourceStatus
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
 
 
 class SearchTrendPoint(BaseModel):
@@ -213,6 +235,8 @@ class EntitySearchTrendSeriesOut(BaseModel):
     last_updated_at: str | None = None
     stale: bool = False
     source_status: Chart3DSourceStatus
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
 
 
 class EntityMetricPoint(BaseModel):

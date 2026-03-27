@@ -1,21 +1,51 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+
 import type { MacroCategorySlug } from "@/lib/macroCategories";
+import { MACRO_CATEGORY_SLUGS } from "@/lib/macroCategories";
+import { api } from "@/lib/api";
 import { mockHeatmapForCategory } from "@/lib/macroMockData";
+import { STALE_MACRO_NEWS_MS, STALE_MARKET_MS } from "@/lib/queryClient";
 import { IndexWatchlist } from "./IndexWatchlist";
 import { MacroSidebar } from "./MacroSidebar";
 import { NewsHeatmap } from "./NewsHeatmap";
 import { NewsList } from "./NewsList";
 import { Top5Trending } from "./Top5Trending";
 
+const NEWS_PRELOAD_LIMIT = 40;
+
 export function MacroLayout() {
+  const queryClient = useQueryClient();
   const [selectedCategory, setSelectedCategory] = useState<MacroCategorySlug | null>("general");
   const [heatmapFilter, setHeatmapFilter] = useState<string | null>(null);
 
   useEffect(() => {
     setHeatmapFilter(null);
   }, [selectedCategory]);
+
+  useEffect(() => {
+    for (const slug of MACRO_CATEGORY_SLUGS) {
+      void queryClient.prefetchQuery({
+        queryKey: ["macro", "news", slug, NEWS_PRELOAD_LIMIT],
+        queryFn: () => api.macroNews(slug, null, NEWS_PRELOAD_LIMIT),
+        staleTime: STALE_MACRO_NEWS_MS
+      });
+      void queryClient.prefetchQuery({
+        queryKey: ["market", "indices", slug],
+        queryFn: () => api.marketIndices(slug),
+        staleTime: STALE_MARKET_MS
+      });
+    }
+    for (const sym of ["SPX", "^GSPC", "BTC-USD"]) {
+      void queryClient.prefetchQuery({
+        queryKey: ["market", "quote", sym],
+        queryFn: () => api.quote(sym),
+        staleTime: STALE_MARKET_MS
+      });
+    }
+  }, [queryClient]);
 
   const heatmapCells = useMemo(() => {
     if (!selectedCategory) return null;

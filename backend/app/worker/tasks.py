@@ -32,13 +32,56 @@ from app.services.reporting import (
 )
 from app.services.spikes import detect_and_store_spikes
 from app.services.entity_metrics_pipeline import sync_entity_search_trend
-from app.services.market_indices_config import all_default_symbols
-from app.services.market_snapshots import upsert_quote_from_fetch
+from app.services.market_snapshots import (
+    OHLCV_CACHE_PERIODS,
+    collect_symbols_for_scheduled_market_refresh,
+    upsert_ohlcv_from_fetch,
+    upsert_quote_from_fetch,
+)
 from app.worker.celery_app import celery_app
 from app.models.data_subscription import UserDataSubscription
 from app.services.subscriptions import ensure_subscription
 
 logger = logging.getLogger(__name__)
+
+
+def _refresh_market_snapshots_sync(symbols: list[str], *, ohlcv_periods: tuple[str, ...] | None = None) -> dict:
+    """
+    Run quote + OHLCV upserts for the given symbols (used by Celery tasks only).
+    Commits quotes then OHLCV in separate transactions.
+    """
+    syms = sorted({(s or "").strip().upper() for s in (symbols or []) if (s or "").strip()})
+    if not syms:
+        return {"symbols": [], "quotes_attempted": 0, "ohlcv_cells": 0}
+    periods = ohlcv_periods if ohlcv_periods is not None else OHLCV_CACHE_PERIODS
+    q_ok = 0
+    with SessionLocal() as db:
+        for sym in syms:
+            try:
+                upsert_quote_from_fetch(db, sym)
+                q_ok += 1
+            except Exception:
+                logger.warning("quote upsert failed in batch for %s", sym, exc_info=True)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("_refresh_market_snapshots_sync quote commit failed")
+    cells = 0
+    with SessionLocal() as db:
+        for sym in syms:
+            for period in periods:
+                try:
+                    upsert_ohlcv_from_fetch(db, sym, period)
+                    cells += 1
+                except Exception:
+                    logger.warning("ohlcv upsert failed %s period=%s", sym, period, exc_info=True)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("_refresh_market_snapshots_sync ohlcv commit failed")
+    return {"symbols": syms, "quotes_attempted": q_ok, "ohlcv_cells": cells}
 
 
 def _enforce_report_limit(db: SessionLocal, user_id: uuid.UUID, max_reports: int | None = None) -> None:
@@ -64,11 +107,6 @@ def _enforce_report_limit(db: SessionLocal, user_id: uuid.UUID, max_reports: int
 
 @celery_app.task(name="app.worker.tasks.tick_schedules")
 def tick_schedules() -> dict:
-    # Ensure schema has entity_ids_csv so worker does not crash on existing DBs
-    from app.db.session import engine
-    from app.db.schema_patch import run_schema_patches
-    run_schema_patches(engine)
-
     now = now_platform()
     triggered = 0
 
@@ -370,6 +408,25 @@ MACRO_NEWS_FEEDS = [
 ]
 
 
+@celery_app.task(name="app.worker.tasks.refresh_macro_news_list_snapshots")
+def refresh_macro_news_list_snapshots() -> dict:
+    """
+    Pre-build Google News aggregate per macro category into macro_news_list_snapshots.
+    Keeps GET /macro/news fast (cache-first).
+    """
+    from app.services.macro_news_snapshot import rebuild_snapshots_all_categories
+
+    with SessionLocal() as db:
+        counts = rebuild_snapshots_all_categories(db)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("refresh_macro_news_list_snapshots commit failed")
+            raise
+    return {"snapshot_counts": counts}
+
+
 @celery_app.task(name="app.worker.tasks.fetch_macro_news")
 def fetch_macro_news() -> dict:
     """
@@ -416,28 +473,102 @@ def fetch_macro_news() -> dict:
 @celery_app.task(name="app.worker.tasks.refresh_market_quotes")
 def refresh_market_quotes() -> dict:
     """
-    Refresh shared market_quote_snapshots for default index symbols + user subscription targets.
-    GET /market/indices reads only from DB (no external calls on request).
+    Refresh shared market_quote_snapshots: V1 core + default indices + market_quote subscriptions.
+    GET /market/* reads snapshots only; failures keep prior cached values inside upsert.
     """
-    syms = all_default_symbols()
     with SessionLocal() as db:
-        extra = db.scalars(
-            select(UserDataSubscription.target_id).where(
-                UserDataSubscription.source_type == "market_quote",
-                UserDataSubscription.is_active.is_(True),
-            )
-        ).all()
-        for tid in extra:
-            t = str(tid).strip().upper()
-            if t:
-                syms.add(t)
+        syms = collect_symbols_for_scheduled_market_refresh(db)
         for sym in sorted(syms):
             try:
                 upsert_quote_from_fetch(db, sym)
             except Exception:
-                continue
-        db.commit()
+                logger.warning("refresh_market_quotes failed for %s", sym, exc_info=True)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("refresh_market_quotes commit failed")
     return {"symbols_refreshed": len(syms)}
+
+
+@celery_app.task(name="app.worker.tasks.refresh_market_ohlcv_snapshots")
+def refresh_market_ohlcv_snapshots() -> dict:
+    """Periodic OHLCV snapshot fill (low frequency). Request handlers do not call providers."""
+    cells = 0
+    failures = 0
+    with SessionLocal() as db:
+        syms = collect_symbols_for_scheduled_market_refresh(db)
+        for sym in sorted(syms):
+            for period in OHLCV_CACHE_PERIODS:
+                try:
+                    upsert_ohlcv_from_fetch(db, sym, period)
+                    cells += 1
+                except Exception:
+                    failures += 1
+                    logger.warning("refresh_market_ohlcv_snapshots failed %s period=%s", sym, period, exc_info=True)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("refresh_market_ohlcv_snapshots commit failed")
+    return {"cells_upserted": cells, "failures": failures}
+
+
+@celery_app.task(name="app.worker.tasks.refresh_market_snapshots_for_symbols")
+def refresh_market_snapshots_for_symbols(symbols: list[str]) -> dict:
+    """Background: refresh quotes + full OHLCV cache for specific symbols (e.g. user-added index)."""
+    return _refresh_market_snapshots_sync(symbols)
+
+
+@celery_app.task(name="app.worker.tasks.refresh_core_market_cache_admin")
+def refresh_core_market_cache_admin() -> dict:
+    """Admin/dev: refresh quotes + OHLCV for V1 core shared symbols only."""
+    from app.services.market_indices_config import CORE_SHARED_MARKET_SYMBOLS_V1
+
+    return _refresh_market_snapshots_sync(sorted(CORE_SHARED_MARKET_SYMBOLS_V1))
+
+
+@celery_app.task(name="app.worker.tasks.warmup_core_market_snapshots")
+def warmup_core_market_snapshots() -> dict:
+    """
+    Post-deploy: staggered refresh for core symbols only (quotes + 1D/1M OHLCV).
+    Full OHLCV periods remain on the 6h beat to limit external burst.
+    """
+    import time
+
+    from app.services.market_indices_config import CORE_SHARED_MARKET_SYMBOLS_V1
+
+    syms = sorted(CORE_SHARED_MARKET_SYMBOLS_V1)
+    with SessionLocal() as db:
+        for i, sym in enumerate(syms):
+            try:
+                upsert_quote_from_fetch(db, sym)
+            except Exception:
+                logger.warning("warmup quote failed %s", sym, exc_info=True)
+            if i + 1 < len(syms):
+                time.sleep(0.2)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("warmup_core_market_snapshots quote commit failed")
+
+    lite_periods: tuple[str, ...] = ("1D", "1M")
+    with SessionLocal() as db:
+        for i, sym in enumerate(syms):
+            for period in lite_periods:
+                try:
+                    upsert_ohlcv_from_fetch(db, sym, period)
+                except Exception:
+                    logger.warning("warmup ohlcv failed %s %s", sym, period, exc_info=True)
+            if i + 1 < len(syms):
+                time.sleep(0.3)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("warmup_core_market_snapshots ohlcv commit failed")
+    return {"warmup": "core", "symbols": len(syms), "ohlcv_periods": list(lite_periods)}
 
 
 @celery_app.task(name="app.worker.tasks.sync_entity_daily_metrics")

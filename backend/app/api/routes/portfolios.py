@@ -4,9 +4,40 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
+
+
+def _entity_signal_envelope(last: datetime | None, stale: bool) -> dict[str, str | bool | None]:
+    lu = last.isoformat() if last else None
+    if last is None:
+        return {
+            "last_updated_at": None,
+            "data_updated_at": None,
+            "data_source": "placeholder",
+            "loading_state": "warming",
+            "message": "Entity metrics are still warming; values shown are placeholders until snapshots arrive.",
+            "stale": True,
+        }
+    if stale:
+        return {
+            "last_updated_at": lu,
+            "data_updated_at": lu,
+            "data_source": "stale_fallback",
+            "loading_state": "stale",
+            "message": None,
+            "stale": True,
+        }
+    return {
+        "last_updated_at": lu,
+        "data_updated_at": lu,
+        "data_source": "snapshot",
+        "loading_state": "ready",
+        "message": None,
+        "stale": False,
+    }
+
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, or_, select
@@ -27,10 +58,16 @@ from app.models.data_subscription import EntityDailyMetric, NormalizedNewsDocume
 from app.models.data_subscription import OhlcvSnapshot
 from app.models.portfolio import EntityRelatedInstrument, EntityTerm, Instrument, Portfolio, PortfolioEntity
 from app.models.user import User
-from app.services.subscriptions import register_entity_subscriptions, remove_entity_subscriptions
+from app.services.market_snapshots import schedule_market_snapshot_refresh_for_symbols
+from app.services.subscriptions import (
+    register_entity_subscriptions,
+    register_instrument_quote_subscription,
+    remove_entity_subscriptions,
+)
 from app.services.target_entity_sync import delete_target_entity_record, upsert_target_entity_for_portfolio_entity
 from app.services.entity_metrics_pipeline import sync_entity_search_trend
 from app.services.entity_references import remove_entity_from_research_layouts
+from app.services.core_data_diag import record_first_paint_envelope, record_snapshot_hit
 from app.services.entity_event_timeline import (
     ai_summary_placeholder,
     build_timeline_points,
@@ -328,12 +365,18 @@ def create_entity(
     if n and n >= MAX_ENTITIES_PER_PORTFOLIO:
         raise HTTPException(status_code=400, detail=MSG_MAX_ENTITIES)
     inst_id = uuid.UUID(payload.instrument_id) if payload.instrument_id else None
+    warm_symbol: str | None = None
     e = PortfolioEntity(user_id=current_user.id, portfolio_id=pid, name=payload.name, instrument_id=inst_id)
     db.add(e)
     db.flush()
     for norm in _sanitize(payload.terms or []):
         db.add(EntityTerm(entity_id=e.id, term=norm, normalized_term=norm))
     register_entity_subscriptions(db, current_user.id, e.id)
+    if inst_id:
+        inst = db.get(Instrument, inst_id)
+        if inst and inst.symbol:
+            register_instrument_quote_subscription(db, current_user.id, inst.symbol.strip())
+            warm_symbol = inst.symbol.strip()
     if payload.terms:
         # Phase-2: ensure every valid-terms entity has initial metric rows immediately.
         rows_synced = sync_entity_search_trend(db, e.id, timeframe="today 3-m")
@@ -342,6 +385,8 @@ def create_entity(
     db.commit()
     logger.info("POST /entities committed portfolio_entity id=%s user_id=%s", e.id, current_user.id)
     db.refresh(e)
+    if warm_symbol:
+        schedule_market_snapshot_refresh_for_symbols([warm_symbol])
     return _entity_out(e)
 
 
@@ -356,10 +401,16 @@ def update_entity(
     e = db.scalar(select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id))
     if not e:
         raise HTTPException(status_code=404, detail="Not found")
+    warm_symbol: str | None = None
     if payload.name is not None:
         e.name = payload.name
     if payload.instrument_id is not None:
         e.instrument_id = uuid.UUID(payload.instrument_id) if payload.instrument_id else None
+        if e.instrument_id:
+            inst = db.get(Instrument, e.instrument_id)
+            if inst and inst.symbol:
+                register_instrument_quote_subscription(db, current_user.id, inst.symbol.strip())
+                warm_symbol = inst.symbol.strip()
     if payload.chart_layout is not None:
         e.chart_layout = _normalize_chart_layout(dict(payload.chart_layout))
         flag_modified(e, "chart_layout")
@@ -367,6 +418,8 @@ def update_entity(
     db.commit()
     logger.info("PATCH /entities committed id=%s user_id=%s", e.id, current_user.id)
     db.refresh(e)
+    if warm_symbol:
+        schedule_market_snapshot_refresh_for_symbols([warm_symbol])
     return _entity_out(e)
 
 
@@ -534,8 +587,13 @@ def add_related_instrument(
     display_order = max((ri.display_order for ri in entity.related_instruments), default=-1) + 1
     ri = EntityRelatedInstrument(entity_id=eid, instrument_id=inst_id, display_order=display_order)
     db.add(ri)
+    warm_symbol = inst.symbol.strip() if inst.symbol else None
+    if warm_symbol:
+        register_instrument_quote_subscription(db, current_user.id, warm_symbol)
     db.commit()
     db.refresh(ri)
+    if warm_symbol:
+        schedule_market_snapshot_refresh_for_symbols([warm_symbol])
     return RelatedInstrumentOut(
         id=str(ri.id),
         instrument_id=str(ri.instrument_id),
@@ -593,20 +651,33 @@ def get_comparison_series(
             continue
     instruments = db.scalars(select(Instrument).where(Instrument.id.in_(ids))).all()
     by_id = {i.id: i for i in instruments}
-    from datetime import datetime, timezone
+    from datetime import timezone
 
     series_lines: list[ComparisonSeriesLine] = []
     all_bars: list[tuple[uuid.UUID, str, list[dict]]] = []
+    latest_snap: datetime | None = None
+    batch_stale = False
     for iid in ids:
         inst = by_id.get(iid)
         if not inst:
             continue
         snap = db.get(OhlcvSnapshot, f"{inst.symbol.upper()}:{period.upper()}")
+        if snap:
+            if snap.is_stale:
+                batch_stale = True
+            if snap.last_success_at and (latest_snap is None or snap.last_success_at > latest_snap):
+                latest_snap = snap.last_success_at
         bars = ((snap.bars or {}).get("bars", []) if snap and snap.bars else [])
         if bars:
             all_bars.append((iid, inst.symbol, bars))
     if not all_bars:
-        return ComparisonSeriesOut(period=period, series=[])
+        return ComparisonSeriesOut(
+            period=period,
+            series=[],
+            data_updated_at=None,
+            data_source="stale_fallback",
+            stale=True,
+        )
     # Align dates: use union of all timestamps, then for each instrument forward-fill and normalize to 100
     dates_sorted: list[datetime] = sorted(
         {
@@ -617,7 +688,14 @@ def get_comparison_series(
         }
     )
     if not dates_sorted:
-        return ComparisonSeriesOut(period=period, series=[])
+        lu_empty = latest_snap.isoformat() if latest_snap else None
+        return ComparisonSeriesOut(
+            period=period,
+            series=[],
+            data_updated_at=lu_empty,
+            data_source="stale_fallback" if batch_stale else "snapshot",
+            stale=batch_stale,
+        )
     by_date: dict[tuple[uuid.UUID, str], dict[datetime, float]] = {}
     for iid, symbol, bars in all_bars:
         by_date[(iid, symbol)] = {
@@ -646,7 +724,15 @@ def get_comparison_series(
             if c is not None
         ]
         series_lines.append(ComparisonSeriesLine(instrument_id=str(iid), symbol=symbol, points=points))
-    return ComparisonSeriesOut(period=period, series=series_lines)
+    lu_iso = latest_snap.isoformat() if latest_snap else None
+    record_snapshot_hit("entity_comparison_series")
+    return ComparisonSeriesOut(
+        period=period,
+        series=series_lines,
+        data_updated_at=lu_iso,
+        data_source="stale_fallback" if batch_stale else "snapshot",
+        stale=batch_stale,
+    )
 
 
 # Period to approximate number of days for analytics time series (aligned with market PERIOD_TO_DAYS)
@@ -776,7 +862,16 @@ def _mock_quadrant(terms: list[str]) -> QuadrantOut:
     seed = "|".join(sorted((t or "").strip().lower() for t in terms)) or "entity"
     search_momentum = (hash((seed, "search_m")) % 100) - 50  # -50..50
     coverage_momentum = (hash((seed, "coverage_m")) % 100) - 50
-    return QuadrantOut(search_momentum=float(search_momentum), coverage_momentum=float(coverage_momentum))
+    return QuadrantOut(
+        search_momentum=float(search_momentum),
+        coverage_momentum=float(coverage_momentum),
+        last_updated_at=None,
+        stale=True,
+        data_updated_at=None,
+        data_source="stale_fallback",
+        loading_state="stale",
+        message=None,
+    )
 
 
 def _mock_sentiment_change(terms: list[str]) -> float:
@@ -803,7 +898,14 @@ def get_search_volume_series(
         raise HTTPException(status_code=404, detail="Entity not found")
     raw_pts, last, stale = entity_metric_timeseries_bundle(db, entity.id, "search_trend", period)
     points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
-    return TimeSeriesOut(period=period, points=points, data=points, last_updated_at=last.isoformat() if last else None, stale=stale)
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_search_volume_series")
+    record_first_paint_envelope(
+        "entity_search_volume_series",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
+    )
+    return TimeSeriesOut(period=period, points=points, data=points, **sig)
 
 
 @router.get("/entities/{entity_id}/coverage-volume-series", response_model=TimeSeriesOut)
@@ -824,7 +926,14 @@ def get_coverage_volume_series(
         raise HTTPException(status_code=404, detail="Entity not found")
     raw_pts, last, stale = entity_metric_timeseries_bundle(db, entity.id, "coverage_volume", period)
     points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
-    return TimeSeriesOut(period=period, points=points, data=points, last_updated_at=last.isoformat() if last else None, stale=stale)
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_coverage_volume_series")
+    record_first_paint_envelope(
+        "entity_coverage_volume_series",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
+    )
+    return TimeSeriesOut(period=period, points=points, data=points, **sig)
 
 
 @router.get("/entities/{entity_id}/sentiment-series", response_model=TimeSeriesOut)
@@ -845,7 +954,14 @@ def get_sentiment_series(
         raise HTTPException(status_code=404, detail="Entity not found")
     raw_pts, last, stale = entity_metric_timeseries_bundle(db, entity.id, "sentiment_score", period)
     points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
-    return TimeSeriesOut(period=period, points=points, data=points, last_updated_at=last.isoformat() if last else None, stale=stale)
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_sentiment_series")
+    record_first_paint_envelope(
+        "entity_sentiment_series",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
+    )
+    return TimeSeriesOut(period=period, points=points, data=points, **sig)
 
 
 @router.get("/entities/{entity_id}/quadrant", response_model=QuadrantOut)
@@ -864,12 +980,14 @@ def get_quadrant(
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     sv, cv, last, stale = entity_quadrant_current_bundle(db, entity.id)
-    return QuadrantOut(
-        search_momentum=sv,
-        coverage_momentum=cv,
-        last_updated_at=last.isoformat() if last else None,
-        stale=stale,
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_quadrant")
+    record_first_paint_envelope(
+        "entity_quadrant",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
     )
+    return QuadrantOut(search_momentum=sv, coverage_momentum=cv, **sig)
 
 
 @router.get("/entities/{entity_id}/quadrant-history", response_model=QuadrantHistoryOut)
@@ -893,13 +1011,14 @@ def get_quadrant_history(
     points = [
         QuadrantHistoryPoint(t=p["t"], coverage_momentum=p["coverage_momentum"], search_momentum=p["search_momentum"]) for p in raw_pts
     ]
-    return QuadrantHistoryOut(
-        period=period_upper,
-        points=points,
-        data=points,
-        last_updated_at=last.isoformat() if last else None,
-        stale=stale,
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_quadrant_history")
+    record_first_paint_envelope(
+        "entity_quadrant_history",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
     )
+    return QuadrantHistoryOut(period=period_upper, points=points, data=points, **sig)
 
 
 @router.get("/entities/{entity_id}/trending", response_model=TrendingOut)
@@ -918,13 +1037,19 @@ def get_trending(
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     search_m, coverage_m, sentiment_change, trend_label, last, stale = entity_trending_bundle(db, entity.id)
+    sig = _entity_signal_envelope(last, stale)
+    record_snapshot_hit("entity_trending")
+    record_first_paint_envelope(
+        "entity_trending",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
+    )
     return TrendingOut(
         search_momentum=search_m,
         coverage_momentum=coverage_m,
         sentiment_change=sentiment_change,
         trend_label=trend_label,
-        last_updated_at=last.isoformat() if last else None,
-        stale=stale,
+        **sig,
     )
 
 
@@ -960,18 +1085,23 @@ def get_entity_chart_3d_data(
         .order_by(EntityDailyMetric.metric_date.desc())
         .limit(1)
     )
+    lu = last.isoformat() if last else None
+    st = not bool(last)
+    record_snapshot_hit("entity_chart_3d")
     return EntityChart3DDataOut(
         entity_id=str(entity.id),
         range=rk,
         mode="search_vs_coverage",
         points=points,
         data=points,
-        last_updated_at=last.isoformat() if last else None,
-        stale=not bool(last),
+        last_updated_at=lu,
+        stale=st,
         source_status=Chart3DSourceStatus(
             search_trend=src_status["search_trend"],
             coverage_volume=src_status["coverage_volume"],
         ),
+        data_updated_at=lu,
+        data_source="stale_fallback" if st else "snapshot",
     )
 
 
@@ -1003,14 +1133,19 @@ def get_entity_search_trend_series(
     points = [SearchTrendPoint(date=str(r["date"]), search_trend=float(r["search_trend"])) for r in raw]
     if not points:
         points = [SearchTrendPoint(date=date.today().isoformat(), search_trend=0.0)]
+    lu = last.isoformat() if last else None
+    st = not bool(last)
+    record_snapshot_hit("entity_search_trend_series")
     return EntitySearchTrendSeriesOut(
         entity_id=str(entity.id),
         range=rk,
         points=points,
         data=points,
-        last_updated_at=last.isoformat() if last else None,
-        stale=not bool(last),
+        last_updated_at=lu,
+        stale=st,
         source_status=Chart3DSourceStatus(search_trend=src["search_trend"], coverage_volume="mock"),
+        data_updated_at=lu,
+        data_source="stale_fallback" if st else "snapshot",
     )
 
 

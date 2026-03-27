@@ -6,11 +6,12 @@ from datetime import datetime, timedelta, timezone
 import yfinance as yf
 
 from app.services.market.providers import OhlcvBar, get_market_provider
+from app.services.market_indices_config import core_and_default_symbols
 
 logger = logging.getLogger(__name__)
 
-# Default symbols we care about for debug logging when fetch fails
-DEFAULT_INDEX_SYMBOLS = frozenset({"^GSPC", "^IXIC", "DX-Y.NYB", "CL=F", "GC=F", "^VIX"})
+# Symbols used for extra logging when Yahoo/Stooq returns empty (aligned with scheduled refresh universe).
+DEFAULT_INDEX_SYMBOLS = frozenset(core_and_default_symbols())
 
 
 def fetch_quote(symbol: str) -> dict:

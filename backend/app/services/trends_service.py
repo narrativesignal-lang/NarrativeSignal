@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.core.config import settings
+from app.services.external_api_stats import bump as bump_external
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, A
 
         pytrends = TrendReq(hl="en-US", tz=0, timeout=(10, 25), proxies=proxies, retries=1, backoff_factor=0.2)
         pytrends.build_payload(kw_list, cat=0, timeframe=tf, geo="", gprop="")
+        bump_external("google_trends", 1)
         df = pytrends.interest_over_time()
 
         _sleep_rate_limit()

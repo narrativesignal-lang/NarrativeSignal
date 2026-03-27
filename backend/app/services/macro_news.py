@@ -1,11 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+import re
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from html import unescape
+from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
+import urllib.request
 
 import feedparser
+
+from app.services.macro_news_dedup import ensure_utc, finalize_macro_news_list
+from app.services.external_api_stats import bump as bump_external
+from app.services.publisher_tier import publisher_tier_and_normalized
+
+logger = logging.getLogger(__name__)
+
+_FEED_FETCH_TIMEOUT_SEC = 6.0
+_FEED_BATCH_WAIT_SEC = 22.0
+_FEED_MAX_WORKERS = 10
+_FEED_USER_AGENT = "Mozilla/5.0 (compatible; NarrativeMacroNews/1.0)"
 
 
 @dataclass
@@ -20,6 +37,10 @@ class MacroNewsItem:
   summary: str | None = None
   sentiment: str | None = None
   impact: float | None = None
+  publisher_tier: int = 3
+  publisher_normalized: str | None = None
+  duplicate_count: int = 1
+  related_publishers: list[str] = field(default_factory=list)
 
 
 # --- Category / subcategory → feed / query mapping ---
@@ -83,12 +104,106 @@ CATEGORY_KEYWORDS: dict[str, dict[str, list[str]]] = {
 
 
 def _google_news_rss_for_query(q: str) -> str:
-  """
-  Build a simple Google News RSS URL for a query.
-  We keep it conservative (English, US) and 24h lookback.
-  """
+  """Build Google News RSS URL (English, US). `when:2d` ≈ 48h lookback for the query."""
   encoded = quote_plus(q)
-  return f"https://news.google.com/rss/search?q={encoded}+when:24h&hl=en-US&gl=US&ceid=US:en"
+  return f"https://news.google.com/rss/search?q={encoded}+when:2d&hl=en-US&gl=US&ceid=US:en"
+
+
+_GOOGLE_NEWS_HOST = "news.google.com"
+
+
+def _feed_source_title(feed: Any) -> str | None:
+  ft = getattr(feed, "title", None) if feed is not None else None
+  return str(ft).strip() if ft else None
+
+
+def _entry_source_block(entry: Any) -> dict[str, Any] | None:
+  src = entry.get("source") if hasattr(entry, "get") else getattr(entry, "source", None)
+  if not src:
+    return None
+  title = src.get("title") if hasattr(src, "get") else getattr(src, "title", None)
+  href = None
+  if hasattr(src, "get"):
+    href = src.get("href") or src.get("url")
+  else:
+    href = getattr(src, "href", None) or getattr(src, "url", None)
+  out: dict[str, Any] = {}
+  if title is not None:
+    out["title"] = title
+  if href is not None:
+    out["href"] = href
+  return out or None
+
+
+def _publisher_from_entry_title(title: str) -> str | None:
+  if " - " not in title:
+    return None
+  return title.rsplit(" - ", 1)[-1].strip() or None
+
+
+def _first_non_google_href(entry: Any) -> str | None:
+  for link in getattr(entry, "links", None) or []:
+    href = link.get("href") if isinstance(link, dict) else getattr(link, "href", None)
+    if href and _GOOGLE_NEWS_HOST not in href:
+      return str(href).strip()
+  return None
+
+
+def _resolve_publisher_and_url(entry: Any, raw_title: str, feed_title: str | None) -> tuple[str, str | None]:
+  """Publisher for display; URL preferring original article over Google redirect."""
+  src = _entry_source_block(entry)
+  pub = None
+  original: str | None = None
+  if src:
+    st = src.get("title") if isinstance(src, dict) else None
+    if st:
+      pub = str(st).strip()
+    ho = src.get("href") if isinstance(src, dict) else getattr(src, "href", None)
+    if ho and _GOOGLE_NEWS_HOST not in str(ho):
+      original = str(ho).strip()
+
+  if not pub:
+    pub = _publisher_from_entry_title(raw_title)
+  if not pub and feed_title and feed_title.lower() != "google news":
+    pub = feed_title
+  if not pub:
+    pub = "News"
+
+  link = getattr(entry, "link", None)
+  link_s = str(link).strip() if link else None
+
+  if not original:
+    original = _first_non_google_href(entry)
+  if not original and link_s and _GOOGLE_NEWS_HOST not in link_s:
+    original = link_s
+  if not original:
+    original = link_s
+
+  return pub, original
+
+
+def _clean_display_title(raw_title: str, publisher: str) -> str:
+  suffix = f" - {publisher}"
+  if publisher and raw_title.endswith(suffix):
+    return raw_title[: -len(suffix)].strip()
+  return raw_title
+
+
+def _plain_summary(raw: str | None, title: str, max_len: int = 220) -> str | None:
+  """Strip HTML, collapse whitespace, cap length; fallback to truncated title."""
+  def clip(s: str) -> str:
+    s = s.strip()
+    if len(s) <= max_len:
+      return s
+    return s[: max_len - 1] + "…"
+
+  if raw:
+    text = unescape(re.sub(r"<[^>]+>", " ", raw))
+    text = re.sub(r"\s+", " ", text).strip()
+    if text:
+      return clip(text)
+
+  return clip(title) if title.strip() else None
 
 
 def _feeds_for(category: str, subcategory: str | None) -> list[tuple[str, str]]:
@@ -116,26 +231,100 @@ _CACHE: dict[tuple[str, str | None, int], tuple[datetime, list[MacroNewsItem]]] 
 _CACHE_TTL = timedelta(minutes=5)
 
 
-def _dedupe_and_sort(items: Iterable[MacroNewsItem], limit: int) -> list[MacroNewsItem]:
-  seen_url: set[str] = set()
-  seen_title: set[tuple[str, str]] = set()
-  deduped: list[MacroNewsItem] = []
+def _fetch_feed_xml(feed_url: str, timeout: float) -> bytes | None:
+  try:
+    req = urllib.request.Request(feed_url, headers={"User-Agent": _FEED_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+      return resp.read()
+  except (URLError, HTTPError, TimeoutError, OSError, ValueError) as e:
+    logger.warning("macro news: feed fetch failed (%s): %s", feed_url[:96], e)
+    return None
 
-  for item in items:
-    key_url = (item.url or "").strip().lower()
-    if key_url:
-      if key_url in seen_url:
-        continue
-      seen_url.add(key_url)
-    else:
-      tkey = (item.title.strip().lower(), item.source.strip().lower())
-      if tkey in seen_title:
-        continue
-      seen_title.add(tkey)
-    deduped.append(item)
 
-  deduped.sort(key=lambda x: x.timestamp, reverse=True)
-  return deduped[:limit]
+def _items_from_parsed_feed(
+  category: str,
+  sub: str,
+  parsed: Any,
+  *,
+  now: datetime,
+  cutoff: datetime,
+) -> list[MacroNewsItem]:
+  feed_title = _feed_source_title(getattr(parsed, "feed", None))
+  out: list[MacroNewsItem] = []
+  for entry in getattr(parsed, "entries", [])[:100]:
+    raw_title = getattr(entry, "title", None)
+    if not raw_title:
+      continue
+    raw_title = str(raw_title).strip()
+
+    published: datetime | None = None
+    pp = getattr(entry, "published_parsed", None)
+    if pp:
+      try:
+        published = datetime(
+          int(pp[0]),
+          int(pp[1]),
+          int(pp[2]),
+          int(pp[3]),
+          int(pp[4]),
+          int(pp[5]),
+          tzinfo=timezone.utc,
+        )
+      except (TypeError, ValueError, IndexError):
+        published = None
+    if not published:
+      published = now
+    published = ensure_utc(published)
+    if published < cutoff:
+      continue
+
+    publisher, article_url = _resolve_publisher_and_url(entry, raw_title, feed_title)
+    tier, pub_norm = publisher_tier_and_normalized(publisher)
+    display_title = _clean_display_title(raw_title, publisher)
+    summary_raw = getattr(entry, "summary", None) or getattr(entry, "description", None)
+    summary = _plain_summary(
+      str(summary_raw) if summary_raw else None,
+      display_title or raw_title,
+    )
+    link_for_id = getattr(entry, "link", None) or article_url or ""
+
+    out.append(
+      MacroNewsItem(
+        id=f"{category}:{sub}:{hash((display_title or raw_title) + (article_url or '') + (link_for_id or ''))}",
+        title=display_title or raw_title,
+        source=publisher,
+        timestamp=published,
+        url=article_url,
+        category=category,
+        subcategory=sub,
+        summary=summary,
+        sentiment=None,
+        impact=None,
+        publisher_tier=tier,
+        publisher_normalized=pub_norm,
+      )
+    )
+  return out
+
+
+def _items_from_feed_url(
+  category: str,
+  sub: str,
+  feed_url: str,
+  *,
+  now: datetime,
+  cutoff: datetime,
+  timeout: float,
+) -> list[MacroNewsItem]:
+  raw = _fetch_feed_xml(feed_url, timeout)
+  if not raw:
+    return []
+  try:
+    parsed = feedparser.parse(raw)
+  except Exception as e:
+    logger.warning("macro news: feed parse failed (%s): %s", feed_url[:96], e)
+    return []
+  return _items_from_parsed_feed(category, sub, parsed, now=now, cutoff=cutoff)
 
 
 def fetch_macro_news(
@@ -149,7 +338,8 @@ def fetch_macro_news(
 
   - Uses category/subcategory keyword mapping.
   - Caches results for a short TTL to avoid hammering upstream feeds.
-  - Deduplicates by URL (or title+source) and sorts newest first.
+  - Collapses near-duplicate stories (URL + normalized title + fuzzy match), keeping the best
+    source by impact, publisher tier, direct URL, then recency; then sorts for display.
   """
   key = (category.lower(), subcategory, limit)
   now = datetime.now(timezone.utc)
@@ -162,43 +352,42 @@ def fetch_macro_news(
     _CACHE[key] = (now, [])
     return []
 
+  bump_external("macro_rss_feed", len(pairs))
+
   cutoff = now - timedelta(hours=48)
   items: list[MacroNewsItem] = []
 
-  for sub, feed_url in pairs:
-    parsed = feedparser.parse(feed_url)
-    for entry in parsed.entries[:100]:
-      link = getattr(entry, "link", None)
-      title = getattr(entry, "title", None)
-      if not title:
-        continue
-
-      published = None
-      if getattr(entry, "published_parsed", None):
-        published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-      if not published:
-        published = now
-      if published < cutoff:
-        continue
-
-      source_title = getattr(getattr(parsed, "feed", None), "title", None) or "News"
-      summary = getattr(entry, "summary", None)
-
-      item = MacroNewsItem(
-        id=f"{category}:{sub}:{hash((title or '') + (link or ''))}",
-        title=title,
-        source=source_title,
-        timestamp=published,
-        url=link,
-        category=category,
-        subcategory=sub,
-        summary=summary,
-        sentiment=None,
-        impact=None,
+  workers = min(_FEED_MAX_WORKERS, max(1, len(pairs)))
+  executor = ThreadPoolExecutor(max_workers=workers)
+  try:
+    futures = [
+      executor.submit(
+        _items_from_feed_url,
+        category,
+        sub,
+        feed_url,
+        now=now,
+        cutoff=cutoff,
+        timeout=_FEED_FETCH_TIMEOUT_SEC,
       )
-      items.append(item)
+      for sub, feed_url in pairs
+    ]
+    done, _pending = wait(futures, timeout=_FEED_BATCH_WAIT_SEC)
+    for fut in done:
+      try:
+        items.extend(fut.result())
+      except Exception as e:
+        logger.warning("macro news: feed task failed: %s", e)
+  finally:
+    executor.shutdown(wait=False, cancel_futures=True)
 
-  deduped = _dedupe_and_sort(items, limit)
-  _CACHE[key] = (now, deduped)
-  return deduped
+  try:
+    final_list = finalize_macro_news_list(items, limit)
+  except Exception as e:
+    logger.warning("macro news: dedup/sort failed, using recency cap: %s", e)
+    items.sort(key=lambda x: ensure_utc(x.timestamp), reverse=True)
+    final_list = items[:limit]
+
+  _CACHE[key] = (now, final_list)
+  return final_list
 

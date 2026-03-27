@@ -419,8 +419,29 @@ def ensure_macro_events_lifecycle_columns(engine) -> None:
         logger.warning("Schema patch macro_events lifecycle NOT NULL failed (may already be applied): %s", e)
 
 
+def ensure_macro_news_list_snapshots_table(engine) -> None:
+    """Cache-first macro news list: one JSONB blob per category."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS macro_news_list_snapshots (
+                        category VARCHAR(32) PRIMARY KEY,
+                        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch macro_news_list_snapshots failed: %s", e)
+
+
 def run_schema_patches(engine) -> None:
     """Run all startup-safe schema patches. Call from API and worker startup."""
+    ensure_macro_news_list_snapshots_table(engine)
     ensure_users_paid_access_column(engine)
     ensure_users_is_admin_column(engine)
     ensure_users_profile_name_column(engine)

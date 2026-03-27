@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+# Minimal shared universe for V1 snapshot/cache (quotes + OHLCV refresh). Yahoo symbols.
+CORE_SHARED_MARKET_SYMBOLS_V1: frozenset[str] = frozenset(
+    {
+        "^GSPC",  # S&P 500
+        "^IXIC",  # NASDAQ Composite
+        "^VIX",
+        "CL=F",
+        "GC=F",
+        "BTC-USD",
+        "ETH-USD",
+    }
+)
+
 # Default indices per category (name + symbol only). Built-in categories only.
 DEFAULT_INDICES_BY_CATEGORY: dict[str, list[dict]] = {
     "general": [
@@ -38,3 +51,8 @@ def all_default_symbols() -> set[str]:
             if sym:
                 out.add(sym)
     return out
+
+
+def core_and_default_symbols() -> set[str]:
+    """Union of V1 core names + default watchlist symbols (always refreshed on schedule)."""
+    return set(CORE_SHARED_MARKET_SYMBOLS_V1) | all_default_symbols()

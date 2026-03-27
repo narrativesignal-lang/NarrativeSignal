@@ -1,7 +1,11 @@
 """
-Rate limiting V1 — Redis fixed-window counters (per minute).
+Rate limiting — Redis fixed-window INCR + EXPIRE (async).
 
-Tunables: RATE_LIMIT_* below. Future: read per-user tier from JWT/cache and override limits.
+- Anonymous: 60 req/min by IP (`ip:*`).
+- Authenticated: 120 req/min by `user_id` only (no parallel IP bucket).
+- Stricter: `/api/macro/news` and `/api/entities*` at 30 req/min (`endpoint:*`).
+
+Redis errors → fail-open (allow). Uses redis.asyncio via get_async_redis().
 """
 
 from __future__ import annotations
@@ -10,23 +14,21 @@ import logging
 import time
 from typing import Any
 
-import redis.asyncio as redis
 from jose import JWTError
 
-from app.core.config import settings
+from app.core.redis_async import get_async_redis
 from app.core.security import decode_token
 
 logger = logging.getLogger(__name__)
 
-# --- Tunable limits (extend later, e.g. premium multipliers) -----------------
 RATE_LIMIT_WINDOW_SEC = 60
 RATE_LIMIT_IP_PER_MINUTE = 60
 RATE_LIMIT_USER_PER_MINUTE = 120
-REDIS_KEY_TTL_SEC = 120  # > window so keys expire after the minute bucket ends
+RATE_LIMIT_STRICT_PER_MINUTE = 30
+REDIS_KEY_NS = "rl:v2"
+# TTL > window so key survives the minute slice; Redis still expires old keys.
+REDIS_KEY_TTL_SEC = 120
 
-REDIS_KEY_PREFIX = "rl:v1"
-
-# Atomic INCR + EXPIRE on first hit; return 1 if exceeded else 0
 _LUA_INCR_CHECK = """
 local c = redis.call('INCR', KEYS[1])
 if c == 1 then
@@ -37,15 +39,6 @@ if c > tonumber(ARGV[1]) then
 end
 return 0
 """
-
-_redis: redis.Redis | None = None
-
-
-def _get_redis() -> redis.Redis:
-    global _redis
-    if _redis is None:
-        _redis = redis.from_url(settings.redis_url, decode_responses=True)
-    return _redis
 
 
 def _window_id() -> int:
@@ -83,44 +76,67 @@ def _bearer_user_id(auth_header: str | None) -> str | None:
     return None
 
 
+def is_strict_rate_path(path: str) -> bool:
+    """Tighter 30/min bucket for macro news and portfolio entity APIs."""
+    if path == "/api/macro/news":
+        return True
+    return path == "/api/entities" or path.startswith("/api/entities/")
+
+
 async def enforce_rate_limits(
     *,
     client_ip: str,
     authorization_header: str | None,
+    path: str,
 ) -> bool:
     """
-    Returns True if the request should be allowed, False if rate limited (429).
+    Returns True if allowed, False if should return 429.
 
-    - Always applies IP bucket (anonymous + authenticated).
-    - If a valid access JWT is present, also applies per-user bucket.
+    Order: strict endpoint bucket (if applicable), then general ip or user bucket.
     """
     try:
-        r = _get_redis()
+        r = get_async_redis()
     except Exception as e:
         logger.warning("rate_limit: redis client failed (fail-open): %s", e)
         return True
 
     wid = _window_id()
-    try:
-        ip_key = f"{REDIS_KEY_PREFIX}:ip:{client_ip}:{wid}"
-        exceeded = await r.eval(
-            _LUA_INCR_CHECK, 1, ip_key, str(RATE_LIMIT_IP_PER_MINUTE), str(REDIS_KEY_TTL_SEC)
-        )
-        if int(exceeded):
-            return False
+    user_id = _bearer_user_id(authorization_header)
+    ident = user_id or client_ip
 
-        user_id = _bearer_user_id(authorization_header)
+    try:
+        if is_strict_rate_path(path):
+            ep_key = f"{REDIS_KEY_NS}:endpoint:{path}:{ident}:{wid}"
+            exceeded = await r.eval(
+                _LUA_INCR_CHECK,
+                1,
+                ep_key,
+                str(RATE_LIMIT_STRICT_PER_MINUTE),
+                str(REDIS_KEY_TTL_SEC),
+            )
+            if int(exceeded):
+                return False
+
         if user_id:
-            user_key = f"{REDIS_KEY_PREFIX}:user:{user_id}:{wid}"
-            exceeded_u = await r.eval(
+            user_key = f"{REDIS_KEY_NS}:user:{user_id}:{wid}"
+            exceeded = await r.eval(
                 _LUA_INCR_CHECK,
                 1,
                 user_key,
                 str(RATE_LIMIT_USER_PER_MINUTE),
                 str(REDIS_KEY_TTL_SEC),
             )
-            if int(exceeded_u):
-                return False
+        else:
+            ip_key = f"{REDIS_KEY_NS}:ip:{client_ip}:{wid}"
+            exceeded = await r.eval(
+                _LUA_INCR_CHECK,
+                1,
+                ip_key,
+                str(RATE_LIMIT_IP_PER_MINUTE),
+                str(REDIS_KEY_TTL_SEC),
+            )
+        if int(exceeded):
+            return False
     except Exception as e:
         logger.warning("rate_limit: redis op failed (fail-open): %s", e)
         return True

@@ -71,3 +71,38 @@ def patch_user(
         "paid_access": u.paid_access,
         "credits_balance": u.credits_balance,
     }
+
+
+@router.get("/diag/core-data")
+def admin_core_data_diag(
+    _admin: User = Depends(require_admin),
+) -> dict:
+    """Redis-backed counters: snapshot hits, fallbacks, warmup, slow routes."""
+    from app.services.core_data_diag import get_core_diag_snapshot
+
+    return get_core_diag_snapshot()
+
+
+@router.post("/market/refresh-cache")
+def admin_refresh_market_cache(
+    _admin: User = Depends(require_admin),
+) -> dict:
+    """
+    Enqueue Celery jobs to refresh V1 core shared market quotes + full OHLCV snapshots.
+    Admin/dev only; does not run Yahoo inline.
+    """
+    try:
+        from app.worker.tasks import refresh_core_market_cache_admin
+
+        job = refresh_core_market_cache_admin.delay()
+        return {
+            "enqueued": True,
+            "task": "refresh_core_market_cache_admin",
+            "task_id": job.id,
+            "scope": "CORE_SHARED_MARKET_SYMBOLS_V1 (quotes + all OHLCV periods)",
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not enqueue market cache refresh (is Celery broker up?): {exc}",
+        ) from exc

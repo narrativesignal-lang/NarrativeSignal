@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { IndexCard } from "./IndexCard";
 import { api, parseApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { STALE_MARKET_MS } from "@/lib/queryClient";
 import {
   DEFAULT_INDEX_WATCHLIST,
   normalizeWatchlistItem,
-  type IndexWatchlistItem,
+  type IndexWatchlistItem
 } from "@/lib/macroMockData";
 
 type ApiIndexRow = {
@@ -15,14 +18,14 @@ type ApiIndexRow = {
   symbol: string;
   price: number | null;
   change_percent: number | null;
+  data_source?: string;
+  stale?: boolean;
+  last_updated_at?: string | null;
 };
 
 type Props = {
   category: string;
 };
-
-const COOLDOWN_MS = 60_000;
-const REFRESH_INTERVAL_MS = 30_000;
 
 type CategoryCache = {
   items: IndexWatchlistItem[];
@@ -54,7 +57,9 @@ function mergeWithCache(
     const change =
       row.price != null && row.change_percent != null
         ? (row.price * row.change_percent) / 100
-        : cachedItem?.change ?? fallbackItem?.change ?? (price != null && changePercent != null ? (price * changePercent) / 100 : null);
+        : cachedItem?.change ??
+          fallbackItem?.change ??
+          (price != null && changePercent != null ? (price * changePercent) / 100 : null);
     const usedCache =
       (row.price == null && cachedItem?.price != null) ||
       (row.change_percent == null && cachedItem?.change_percent != null);
@@ -78,7 +83,7 @@ function mergeWithCache(
           price,
           change_percent: changePercent,
           change: change ?? undefined,
-          dataSource,
+          dataSource
         },
         dataSource
       )
@@ -98,112 +103,115 @@ function toDisplayItems(items: IndexWatchlistItem[]): IndexWatchlistItem[] {
       ...item,
       price,
       change_percent: changePercent,
-      change: change ?? undefined,
+      change: change ?? undefined
     });
   });
 }
 
 export function IndexWatchlist({ category }: Props) {
   const { t } = useI18n();
-  const [items, setItems] = useState<IndexWatchlistItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
+  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
 
   const cacheRef = useRef<Map<string, CategoryCache>>(new Map());
-  const lastFailureRef = useRef<Map<string, number>>(new Map());
 
-  const fetchIndices = useCallback(async () => {
-    const now = Date.now();
-    const lastFail = lastFailureRef.current.get(category) ?? 0;
-    const inCooldown = lastFail > 0 && now - lastFail < COOLDOWN_MS;
-    const cached = cacheRef.current.get(category);
-
-    if (inCooldown) {
-      setLoading(false);
-      if (cached?.items.length) {
-        setItems(toDisplayItems(cached.items));
-        setError(null);
-      } else {
-        const fallback = DEFAULT_INDEX_WATCHLIST.map((i) =>
-          normalizeWatchlistItem({ ...i }, "fallback")
-        );
-        setItems(fallback);
-      }
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    try {
+  const q = useQuery({
+    queryKey: ["market", "indices", category],
+    queryFn: async () => {
       const json = await api.marketIndices(category);
       const data = json?.data ?? [];
-      if (!Array.isArray(data) || data.length === 0) {
+      if (!Array.isArray(data)) {
         throw new Error(t("macro.indicesEmpty"));
       }
-      const merged = mergeWithCache(
-        data,
-        cached?.items ?? null,
-        category
-      );
-      const display = toDisplayItems(merged);
-      setItems(display);
-      cacheRef.current.set(category, { items: merged, timestamp: now });
-      lastFailureRef.current.set(category, 0);
-    } catch (e: unknown) {
-      lastFailureRef.current.set(category, now);
-      const hint = parseApiError(e);
-      if (cached?.items.length) {
-        const display = toDisplayItems(
-          cached.items.map((i) => ({ ...i, dataSource: "cached" as const }))
-        );
-        setItems(display);
-        setError(hint);
-      } else {
-        const fallback = DEFAULT_INDEX_WATCHLIST.map((i) =>
-          normalizeWatchlistItem({ ...i }, "fallback")
-        );
-        setItems(fallback);
-        setError(hint);
+      if (
+        data.length === 0 &&
+        json?.loading_state !== "placeholder" &&
+        json?.data_source !== "placeholder"
+      ) {
+        throw new Error(t("macro.indicesEmpty"));
       }
-    } finally {
-      setLoading(false);
-    }
-  }, [category, t]);
+      return json;
+    },
+    staleTime: STALE_MARKET_MS,
+    gcTime: 45 * 60 * 1000
+  });
 
   useEffect(() => {
-    fetchIndices();
-    const id = setInterval(fetchIndices, REFRESH_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [fetchIndices]);
+    setHiddenIds([]);
+  }, [category]);
+
+  useEffect(() => {
+    if (q.isSuccess && q.data?.data && Array.isArray(q.data.data) && q.data.data.length > 0) {
+      const merged = mergeWithCache(
+        q.data.data,
+        cacheRef.current.get(category)?.items ?? null,
+        category
+      );
+      cacheRef.current.set(category, { items: merged, timestamp: Date.now() });
+    }
+  }, [q.isSuccess, q.data, category]);
+
+  const itemsAll = useMemo(() => {
+    const cached = cacheRef.current.get(category)?.items ?? null;
+    const data = q.data?.data;
+    if (q.isSuccess && data && Array.isArray(data) && data.length > 0) {
+      return toDisplayItems(mergeWithCache(data, cached, category));
+    }
+    if (q.isSuccess && data && Array.isArray(data) && data.length === 0) {
+      return toDisplayItems(
+        DEFAULT_INDEX_WATCHLIST.map((i) => normalizeWatchlistItem({ ...i }, "fallback"))
+      );
+    }
+    if (q.isError) {
+      if (cached?.length) {
+        return toDisplayItems(cached.map((i) => ({ ...i, dataSource: "cached" as const })));
+      }
+      return toDisplayItems(
+        DEFAULT_INDEX_WATCHLIST.map((i) => normalizeWatchlistItem({ ...i }, "fallback"))
+      );
+    }
+    if (cached?.length) {
+      return toDisplayItems(cached);
+    }
+    return [];
+  }, [q.isSuccess, q.isError, q.data, category]);
+
+  const items = useMemo(
+    () => itemsAll.filter((item) => !hiddenIds.includes(item.id)),
+    [itemsAll, hiddenIds]
+  );
+
+  const loading = q.isLoading && items.length === 0;
+  const errorMsg = q.isError ? parseApiError(q.error) : null;
 
   const handleAdd = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!name.trim() || !symbol.trim()) return;
-      setError(null);
       try {
         await api.addMarketIndex({
           category,
           name: name.trim(),
           symbol: symbol.trim(),
-          asset_type: "index",
+          asset_type: "index"
         });
         setName("");
         setSymbol("");
         setModalOpen(false);
-        fetchIndices();
-      } catch (e: unknown) {
-        setError(parseApiError(e));
+        await queryClient.invalidateQueries({ queryKey: ["market", "indices", category] });
+      } catch (e2: unknown) {
+        console.warn(parseApiError(e2));
+        await queryClient.invalidateQueries({ queryKey: ["market", "indices", category] });
       }
     },
-    [category, name, symbol, fetchIndices]
+    [category, name, symbol, queryClient]
   );
 
-  const removeItem = useCallback((id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+  const hideRow = useCallback((id: string) => {
+    setHiddenIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
   }, []);
 
   return (
@@ -218,9 +226,14 @@ export function IndexWatchlist({ category }: Props) {
           {t("macro.addIndex")}
         </button>
       </div>
-      {error ? (
+      {errorMsg ? (
         <div className="mt-2 rounded border border-amber-900/60 bg-amber-950/40 px-2 py-1 text-xs text-amber-200">
-          {error}
+          {errorMsg}
+        </div>
+      ) : null}
+      {q.isSuccess && q.data?.message && (!q.data.data || q.data.data.length === 0) ? (
+        <div className="mt-2 rounded border border-sky-900/50 bg-sky-950/30 px-2 py-1.5 text-[11px] text-sky-100/90">
+          {q.data.message}
         </div>
       ) : null}
       <div className="mt-2 flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-auto">
@@ -246,7 +259,7 @@ export function IndexWatchlist({ category }: Props) {
               />
               <button
                 type="button"
-                onClick={() => removeItem(item.id)}
+                onClick={() => hideRow(item.id)}
                 className="absolute right-2 top-2 rounded p-1 text-slate-500 opacity-0 hover:bg-slate-800 hover:text-red-300 group-hover:opacity-100"
                 title={t("common.remove")}
               >

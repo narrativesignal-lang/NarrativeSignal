@@ -16,8 +16,28 @@ export type NewsItem = {
   url?: string | null;
   summary?: string | null;
   sentiment: string | null;
-  impact: number;
+  /** Kept for UI; macro RSS items often omit scores — use `null` to sort by tier. */
+  impact: number | null;
+  publisher_tier: 1 | 2 | 3;
+  publisher_normalized?: string | null;
+  duplicate_count: number;
+  related_publishers: string[];
 };
+
+/** Mock tier hints (subset of backend publisher_tier map). */
+const MOCK_SOURCE_TIER: Record<string, 1 | 2 | 3> = {
+  Reuters: 1,
+  Bloomberg: 1,
+  CNBC: 1,
+  FT: 1,
+  WSJ: 1,
+  MarketWatch: 1,
+  CoinDesk: 2,
+};
+
+function mockTierForSource(source: string): 1 | 2 | 3 {
+  return MOCK_SOURCE_TIER[source] ?? 3;
+}
 
 export type HeatmapCell = {
   name: string;
@@ -28,10 +48,6 @@ export type HeatmapCell = {
 
 const SOURCES = ["Reuters", "Bloomberg", "CNBC", "FT", "WSJ", "MarketWatch", "CoinDesk"];
 const SENTIMENTS = ["Neutral", "Bullish", "Bearish", "Positive", "Negative", null];
-
-function randomInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
 
 function pick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
@@ -52,20 +68,28 @@ export function mockNewsForCategory(
   const now = Date.now();
   for (let i = 0; i < limit; i++) {
     const sub = pick(subs);
+    const source = pick(SOURCES);
     out.push({
       id: `mock-${categorySlug}-${i}-${now}`,
       title: `Headline: ${sub} and macro developments ${i + 1}`,
-      source: pick(SOURCES),
+      source,
       timestamp: new Date(now - i * 3600000 * (0.5 + Math.random())).toISOString(),
       category: categorySlug,
       subcategory: sub,
+      summary: `Short mock preview for ${sub}: markets and policy watch (${i + 1}).`,
+      url: `https://example.com/news/mock-${categorySlug}-${i}`,
       sentiment: pick(SENTIMENTS),
-      impact: randomInt(0, 10),
+      impact: null,
+      publisher_tier: mockTierForSource(source),
+      publisher_normalized: source,
+      duplicate_count: 1,
+      related_publishers: [],
     });
   }
-  return out.sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
+  return out.sort((a, b) => {
+    if (a.publisher_tier !== b.publisher_tier) return a.publisher_tier - b.publisher_tier;
+    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+  });
 }
 
 /**

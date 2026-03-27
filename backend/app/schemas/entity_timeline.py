@@ -34,6 +34,9 @@ class TimelinePointsResponse(BaseModel):
     range_start: int
     range_end: int
     points: list[TimelinePointOut]
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    stale: bool = False
 
 
 class TimelineNewsItemOut(BaseModel):

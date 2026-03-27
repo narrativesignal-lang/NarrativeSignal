@@ -316,12 +316,27 @@ export const api = {
       `/api/entities/${entityId}/coverage-volume-series?period=${encodeURIComponent(period ?? "1M")}`
     ),
   getEntityQuadrant: (entityId: string) =>
-    request<{ search_momentum: number; coverage_momentum: number }>(`/api/entities/${entityId}/quadrant`),
+    request<{
+      search_momentum: number;
+      coverage_momentum: number;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
+      stale?: boolean;
+    }>(`/api/entities/${entityId}/quadrant`),
 
   getEntityQuadrantHistory: (entityId: string, period?: string) =>
     request<{
       period: string;
       points: Array<{ t: string; coverage_momentum: number; search_momentum: number }>;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
+      stale?: boolean;
     }>(
       `/api/entities/${entityId}/quadrant-history?period=${encodeURIComponent(period ?? "1M")}`
     ),
@@ -337,6 +352,12 @@ export const api = {
       coverage_momentum: number;
       sentiment_change: number;
       trend_label: string;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
+      stale?: boolean;
     }>(`/api/entities/${entityId}/trending`),
 
   getEntityPriceTimelinePoints: (
@@ -525,8 +546,21 @@ export const api = {
 
   marketIndices: (category: string) =>
     request<{
-      data: Array<{ name: string; symbol: string; price: number | null; change_percent: number | null }>;
+      data: Array<{
+        name: string;
+        symbol: string;
+        price: number | null;
+        change_percent: number | null;
+        stale?: boolean;
+        last_updated_at?: string | null;
+        data_source?: string;
+      }>;
       stale?: boolean;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
     }>(`/api/market/indices?category=${encodeURIComponent(category)}`),
 
   addMarketIndex: (payload: { category: string; name: string; symbol: string; asset_type?: string }) =>
@@ -535,25 +569,84 @@ export const api = {
       body: JSON.stringify({ asset_type: "index", ...payload }),
     }),
 
-  macroNews: (category: string, subcategory?: string | null, limit = 40) =>
-    request<
-      Array<{
-        id: string;
-        title: string;
-        source: string;
-        timestamp: string;
-        url: string | null;
-        category: string;
-        subcategory: string;
-        summary: string | null;
-        sentiment: string | null;
-        impact: number | null;
-      }>
+  macroNews: async (category: string, subcategory?: string | null, limit = 40) => {
+    type Item = {
+      id: string;
+      title: string;
+      source: string;
+      timestamp: string;
+      url: string | null;
+      category: string;
+      subcategory: string;
+      summary: string | null;
+      sentiment: string | null;
+      impact: number | null;
+      publisher_tier?: number;
+      publisher_normalized?: string | null;
+      duplicate_count?: number;
+      related_publishers?: string[];
+    };
+    type Env = {
+      data: Item[];
+      data_updated_at: string | null;
+      data_source: string;
+      stale: boolean;
+      loading_state: "ready" | "warming" | "placeholder" | "stale";
+      message: string | null;
+    };
+    const res = await request<
+      | Item[]
+      | {
+          data: Item[];
+          data_updated_at?: string | null;
+          data_source?: string;
+          stale?: boolean;
+          loading_state?: "ready" | "warming" | "placeholder" | "stale";
+          message?: string | null;
+        }
     >(
       `/api/macro/news?category=${encodeURIComponent(category)}${
         subcategory ? `&subcategory=${encodeURIComponent(subcategory)}` : ""
       }&limit=${limit}`
-    ),
+    );
+    if (Array.isArray(res)) {
+      const out: Env = {
+        data: res,
+        data_updated_at: null,
+        data_source: "snapshot",
+        stale: false,
+        loading_state: "ready",
+        message: null
+      };
+      return out;
+    }
+    if (res && typeof res === "object" && Array.isArray((res as { data?: unknown }).data)) {
+      const o = res as {
+        data: Item[];
+        data_updated_at?: string | null;
+        data_source?: string;
+        stale?: boolean;
+        loading_state?: "ready" | "warming" | "placeholder" | "stale";
+        message?: string | null;
+      };
+      return {
+        data: o.data,
+        data_updated_at: o.data_updated_at ?? null,
+        data_source: o.data_source ?? "snapshot",
+        stale: Boolean(o.stale),
+        loading_state: o.loading_state ?? "ready",
+        message: o.message ?? null
+      };
+    }
+    return {
+      data: [],
+      data_updated_at: null,
+      data_source: "placeholder",
+      stale: true,
+      loading_state: "warming",
+      message: "Unable to load macro news."
+    };
+  },
 
   macroEvents: (limit = 50, category?: string | null) =>
     request<

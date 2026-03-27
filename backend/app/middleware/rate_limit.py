@@ -13,7 +13,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.core.rate_limit import client_ip_from_scope, enforce_rate_limits
 
 API_PREFIX = "/api"
-RATE_LIMIT_BODY = json.dumps({"detail": "Rate limit exceeded"}).encode("utf-8")
+RATE_LIMIT_BODY = json.dumps({"detail": "rate limit exceeded"}).encode("utf-8")
 
 
 class RateLimitMiddleware:
@@ -40,7 +40,7 @@ class RateLimitMiddleware:
         ip = client_ip_from_scope(headers, client)
         auth = hdr_map.get("authorization")
 
-        if not await enforce_rate_limits(client_ip=ip, authorization_header=auth):
+        if not await enforce_rate_limits(client_ip=ip, authorization_header=auth, path=path):
             await send429(send)
             return
 

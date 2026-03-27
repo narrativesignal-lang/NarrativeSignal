@@ -55,16 +55,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const hasToken = !!getAccessToken();
-
-  if (!isPublicPath && loading && hasToken) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-sm text-slate-400">{t("common.loading")}</div>
-      </div>
-    );
-  }
-
   if (!isPublicPath && !loading && !getAccessToken()) {
     return (
       <div className="flex min-h-screen items-center justify-center">

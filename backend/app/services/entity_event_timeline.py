@@ -188,6 +188,9 @@ def build_timeline_points(
             range_start=0,
             range_end=0,
             points=[],
+            data_updated_at=None,
+            data_source="stale_fallback",
+            stale=True,
         )
 
     if not access.can_interact:
@@ -199,9 +202,13 @@ def build_timeline_points(
             range_start=0,
             range_end=0,
             points=[],
+            data_updated_at=None,
+            data_source="stale_fallback",
+            stale=True,
         )
 
-    bars, _snap, _stale = resolve_ohlcv_bars(db, sym, period.upper() if period else "1M")
+    bars, snap, stale_ohlcv = resolve_ohlcv_bars(db, sym, period.upper() if period else "1M")
+    lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else None
     if not bars:
         return TimelinePointsResponse(
             access=access,
@@ -211,6 +218,9 @@ def build_timeline_points(
             range_start=0,
             range_end=0,
             points=[],
+            data_updated_at=lu,
+            data_source="stale_fallback" if stale_ohlcv else "snapshot",
+            stale=stale_ohlcv,
         )
 
     times = [int(b["time"]) for b in bars if b.get("time") is not None]
@@ -257,6 +267,9 @@ def build_timeline_points(
         range_start=r0,
         range_end=r1,
         points=points,
+        data_updated_at=lu,
+        data_source="stale_fallback" if stale_ohlcv else "snapshot",
+        stale=stale_ohlcv,
     )
 
 

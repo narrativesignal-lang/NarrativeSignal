@@ -1,13 +1,13 @@
 "use client";
 
-import Link from "next/link";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { Shell } from "@/components/Shell";
 import { api } from "@/lib/api";
+import { readMacroNewsArticleFromSession } from "@/lib/macroNewsDetailCache";
+import { stripHtmlToPlain } from "@/lib/plainText";
 
-type MacroNewsItem = Awaited<ReturnType<typeof api.macroNews>>[number];
 type MacroEventItem = Awaited<ReturnType<typeof api.macroEvents>>[number];
 
 type Article = {
@@ -21,6 +21,8 @@ type Article = {
   impact?: number | null;
   summary?: string | null;
   url?: string | null;
+  duplicate_count?: number;
+  related_publishers?: string[];
 };
 
 export default function NewsDetailPage() {
@@ -68,23 +70,31 @@ export default function NewsDetailPage() {
             });
           }
         } else {
-          const news: MacroNewsItem[] = await api.macroNews(category || "general", subcategory, 100);
-          const n = news.find((x) => x.id === id);
-          if (!n) {
+          const cached = readMacroNewsArticleFromSession(id);
+          if (!cached) {
             setArticle(null);
-            setError("Article not found");
+            setError(
+              "This story isn’t cached. Open it from the Macro news list on the dashboard, or use your browser Back button."
+            );
           } else {
             setArticle({
-              id: n.id,
-              title: n.title,
-              source: n.source ?? "—",
-              timestamp: n.timestamp ?? null,
-              category: n.category ?? category,
-              subcategory: n.subcategory ?? subcategory,
-              sentiment: n.sentiment ?? null,
-              impact: n.impact ?? null,
-              summary: n.summary ?? null,
-              url: n.url ?? null,
+              id: cached.id,
+              title: cached.title,
+              source: cached.source ?? "—",
+              timestamp: cached.timestamp ?? null,
+              category: cached.category ?? category ?? null,
+              subcategory: cached.subcategory ?? subcategory ?? null,
+              sentiment: cached.sentiment ?? null,
+              impact: cached.impact ?? null,
+              summary: cached.summary ?? null,
+              url: cached.url ?? null,
+              duplicate_count:
+                typeof cached.duplicate_count === "number" && cached.duplicate_count >= 1
+                  ? cached.duplicate_count
+                  : 1,
+              related_publishers: Array.isArray(cached.related_publishers)
+                ? cached.related_publishers
+                : [],
             });
           }
         }
@@ -129,7 +139,7 @@ export default function NewsDetailPage() {
                 <h1 className="text-lg font-semibold text-slate-50 leading-snug">
                   {article.title}
                 </h1>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
                   <span>{article.source}</span>
                   {ts ? (
                     <>
@@ -137,23 +147,25 @@ export default function NewsDetailPage() {
                       <span>{ts}</span>
                     </>
                   ) : null}
-                  {article.category ? (
+                  {(article.subcategory || article.category) ? (
                     <>
                       <span>·</span>
-                      <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
-                        {article.category}
-                      </span>
-                    </>
-                  ) : null}
-                  {article.subcategory ? (
-                    <>
-                      <span>·</span>
-                      <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
-                        {article.subcategory}
-                      </span>
+                      <span>{article.subcategory ?? article.category}</span>
                     </>
                   ) : null}
                 </div>
+                {sourceType === "macro_news" && (article.duplicate_count ?? 1) > 1 ? (
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                    {(article.related_publishers?.length ?? 0) > 0 ? (
+                      <>Related coverage: {article.related_publishers!.join(", ")}</>
+                    ) : (
+                      <>
+                        Similar headlines merged from multiple picks ({article.duplicate_count}{" "}
+                        items).
+                      </>
+                    )}
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -170,8 +182,8 @@ export default function NewsDetailPage() {
               </div>
 
               {article.summary ? (
-                <div className="mt-2 rounded bg-slate-900/60 p-3 text-sm leading-relaxed text-slate-200">
-                  {article.summary}
+                <div className="mt-2 rounded bg-slate-900/60 p-3 text-sm leading-relaxed text-slate-200 whitespace-pre-wrap">
+                  {stripHtmlToPlain(article.summary, 4000)}
                 </div>
               ) : (
                 <div className="mt-2 rounded bg-slate-900/60 p-3 text-sm text-slate-400">
