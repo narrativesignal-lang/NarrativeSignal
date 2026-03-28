@@ -73,7 +73,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={() => setMobileNavOpen((o) => !o)}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-slate-700 bg-slate-900/60 text-slate-300 hover:bg-slate-800 md:hidden"
-              aria-label={mobileNavOpen ? "Close menu" : "Open menu"}
+              aria-label={mobileNavOpen ? t("nav.menuCloseAria") : t("nav.menuOpenAria")}
               aria-expanded={mobileNavOpen}
             >
               {mobileNavOpen ? (

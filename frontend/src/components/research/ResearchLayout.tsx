@@ -48,8 +48,8 @@ export function ResearchLayout() {
         </div>
         <p className="mt-1 text-sm text-slate-500">{t("research.subtitle")}</p>
       </div>
-      <div className="flex min-w-0 flex-col gap-6 md:grid md:min-h-[60vh] md:grid-cols-[240px_1fr]">
-        <aside className="flex min-h-0 min-w-0 shrink-0 flex-col rounded-lg border border-slate-800 bg-slate-900/40 p-3 md:min-w-0">
+      <div className="flex min-w-0 flex-col gap-6 md:grid md:min-h-[60vh] md:grid-cols-[240px_1fr] md:items-stretch">
+        <aside className="flex h-full min-h-0 min-w-0 shrink-0 flex-col rounded-lg border border-slate-800 bg-slate-900/40 p-3 md:min-h-0 md:min-w-0">
           <ResearchSidebar
             selectedProjectId={selectedProject?.id ?? null}
             onSelectProject={setSelectedProject}

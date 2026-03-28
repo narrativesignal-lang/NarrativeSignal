@@ -158,6 +158,7 @@ export default function SchedulesPage() {
   const [selectedEntityIds, setSelectedEntityIds] = useState<Record<string, boolean>>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const [highAlertOpen, setHighAlertOpen] = useState(false);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
   const highAlertExplained = useRef(false);
   const defaultNameSeeded = useRef(false);
 
@@ -223,8 +224,15 @@ export default function SchedulesPage() {
       setHighAlertOpen(true);
       return;
     }
-    if (isComingUp(scheduleType) && !isAdmin) return;
+    if (isComingUp(scheduleType) && !isAdmin) {
+      setError(t("schedules.plannedNotAvailable"));
+      return;
+    }
     setError(null);
+    if (!name.trim()) {
+      setError(t("schedules.errorNameRequired"));
+      return;
+    }
     if (scheduleType === "standard_monitor") {
       if (bucketMinutes < 60) {
         setError(t("schedules.minAggregationStandard"));
@@ -235,16 +243,17 @@ export default function SchedulesPage() {
         return;
       }
     }
+    const entity_ids = Object.entries(selectedEntityIds)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    if (!entity_ids.length) {
+      setError(t("schedules.selectOneEntity"));
+      return;
+    }
+    setCreateSubmitting(true);
     try {
-      const entity_ids = Object.entries(selectedEntityIds)
-        .filter(([, v]) => v)
-        .map(([k]) => k);
-      if (!entity_ids.length) {
-        setError(t("schedules.selectOneEntity"));
-        return;
-      }
       await api.createSchedule({
-        name,
+        name: name.trim(),
         cron,
         group_ids: [],
         entity_ids,
@@ -256,8 +265,12 @@ export default function SchedulesPage() {
         impact_threshold: typeof impactThreshold === "number" ? impactThreshold : undefined,
       });
       await refresh();
+      setToast(t("schedules.createSuccessToast"));
+      window.setTimeout(() => setToast(null), 6500);
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setCreateSubmitting(false);
     }
   }
 
@@ -488,25 +501,18 @@ export default function SchedulesPage() {
                 </div>
               </div>
               <button
-                className={
-                  "mt-3 w-full rounded px-3 py-2 text-sm font-medium " +
-                  (isComingUp(scheduleType) && !isAdmin
-                    ? "cursor-not-allowed bg-slate-700 text-slate-400 opacity-70"
-                    : "bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed")
-                }
-                onClick={create}
-                disabled={atScheduleLimit || atActiveLimit || (isComingUp(scheduleType) && !isAdmin)}
+                className="mt-3 w-full rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
+                onClick={() => void create()}
+                disabled={atScheduleLimit || atActiveLimit || createSubmitting}
                 title={
-                  isComingUp(scheduleType) && !isAdmin
-                    ? t("schedules.plannedNotAvailable")
-                    : atScheduleLimit
-                      ? LIMIT_MESSAGES.MAX_SAVED_SCHEDULES
-                      : atActiveLimit
-                        ? LIMIT_MESSAGES.MAX_ACTIVE_SCHEDULES
-                        : undefined
+                  atScheduleLimit
+                    ? LIMIT_MESSAGES.MAX_SAVED_SCHEDULES
+                    : atActiveLimit
+                      ? LIMIT_MESSAGES.MAX_ACTIVE_SCHEDULES
+                      : undefined
                 }
               >
-                {t("schedules.createSchedule")}
+                {createSubmitting ? t("schedules.createSubmitting") : t("schedules.createSchedule")}
               </button>
             </div>
           </div>

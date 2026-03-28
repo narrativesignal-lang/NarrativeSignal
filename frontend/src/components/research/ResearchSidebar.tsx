@@ -38,6 +38,8 @@ export function ResearchSidebar({
   const [editName, setEditName] = useState("");
   const [openMenu, setOpenMenu] = useState<MenuTarget | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const successClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const { t } = useI18n();
@@ -82,6 +84,12 @@ export function ResearchSidebar({
     loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    return () => {
+      if (successClearRef.current) clearTimeout(successClearRef.current);
+    };
+  }, []);
+
   /** Tree must show ONLY folders and projects. Never render layout_config.tabs, panels, or charts. */
   const isValidFolder = (f: { id?: unknown; name?: unknown; parent_id?: unknown }): f is Folder =>
     typeof f?.id === "string" && typeof f?.name === "string" && (f.parent_id === null || typeof f.parent_id === "string");
@@ -107,8 +115,14 @@ export function ResearchSidebar({
 
   async function createFolder(parentId: string | null) {
     const name = newFolderName.trim();
-    if (!name || loading) return;
+    if (!name) {
+      setSuccessMsg(null);
+      setError(t("research.enterFolderName"));
+      return;
+    }
+    if (loading) return;
     setError(null);
+    setSuccessMsg(null);
     setLoading(true);
     try {
       await api.createResearchFolder({
@@ -118,6 +132,9 @@ export function ResearchSidebar({
       setNewFolderName("");
       setNewFolderParentId(null);
       await loadAll();
+      setSuccessMsg(t("research.folderCreatedToast"));
+      if (successClearRef.current) clearTimeout(successClearRef.current);
+      successClearRef.current = setTimeout(() => setSuccessMsg(null), 4000);
     } catch (e: unknown) {
       setError(parseApiError(e));
     } finally {
@@ -238,7 +255,7 @@ export function ResearchSidebar({
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       <div className="flex items-center gap-1.5 border-b border-slate-700/80 pb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{t("nav.research")}</span>
         <SectionHelp titleKey="help.researchSidebarTitle" bodyKey="help.researchSidebarBody" />
@@ -248,8 +265,13 @@ export function ResearchSidebar({
           {error}
         </div>
       ) : null}
+      {successMsg ? (
+        <div className="rounded border border-emerald-900/50 bg-emerald-950/25 px-2 py-1.5 text-xs text-emerald-200">
+          {successMsg}
+        </div>
+      ) : null}
 
-      <nav className="flex min-w-0 flex-1 flex-col overflow-auto rounded border border-slate-700/80 bg-slate-900/30 py-1">
+      <nav className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto rounded border border-slate-700/80 bg-slate-900/30 py-1">
         {rootFolders.length === 0 && !newFolderParentId ? (
           <p className="px-2 py-2 text-xs text-slate-500 text-balance break-words">{t("research.noFoldersYet")}</p>
         ) : null}
@@ -572,6 +594,7 @@ export function ResearchSidebar({
         })}
       </nav>
 
+      <div className="shrink-0 space-y-1">
       {newFolderParentId === ROOT_FOLDER_SENTINEL ? (
         <div className="flex min-w-0 gap-1.5 rounded border border-slate-700 bg-slate-800/40 p-1.5">
           <input
@@ -596,6 +619,7 @@ export function ResearchSidebar({
           {t("research.addFolder")}
         </button>
       )}
+      </div>
 
       {openMenu && menuAnchor && typeof document !== "undefined" &&
         createPortal(

@@ -105,7 +105,11 @@ function LoginPageContent() {
 
         <div className="mt-4 text-sm text-slate-300">
           {mode === "login" ? t("auth.noAccount") : t("auth.haveAccount")}{" "}
-          <button className="text-indigo-300 hover:text-indigo-200" onClick={() => setMode(mode === "login" ? "register" : "login")}>
+          <button
+            type="button"
+            className="text-indigo-300 hover:text-indigo-200"
+            onClick={() => setMode(mode === "login" ? "register" : "login")}
+          >
             {mode === "login" ? t("auth.register") : t("auth.signIn")}
           </button>
         </div>

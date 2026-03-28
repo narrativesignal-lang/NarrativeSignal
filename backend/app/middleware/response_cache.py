@@ -33,6 +33,20 @@ SKIP_PATH_PREFIXES: tuple[str, ...] = (
     "/api/auth/refresh",
 )
 
+# Per-user CRUD reads must not be served from Redis after POST/PATCH/DELETE; cache invalidation is not wired.
+BYPASS_CACHE_PATH_PREFIXES: tuple[str, ...] = (
+    "/api/auth/",
+    "/api/portfolios",
+    "/api/entities/",
+    "/api/research/folders",
+    "/api/research/projects",
+    "/api/schedules",
+    "/api/alerts",
+    "/api/keyword-groups",
+    "/api/groups",
+    "/api/reports",
+)
+
 BODY_MAX_BYTES = 6 * 1024 * 1024
 WAIT_ITERATIONS = 90
 WAIT_SEC = 0.05
@@ -146,6 +160,10 @@ class ResponseCacheMiddleware:
             return
 
         if any(path.startswith(p) for p in SKIP_PATH_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        if any(path.startswith(p) for p in BYPASS_CACHE_PATH_PREFIXES):
             await self.app(scope, receive, send)
             return
 

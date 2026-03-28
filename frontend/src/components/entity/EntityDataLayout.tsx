@@ -43,6 +43,8 @@ export function EntityDataLayout() {
   const [aiKeywords, setAiKeywords] = useState<string[]>([]);
   const [aiLoading, setAiLoading] = useState(false);
   const [newPortfolioName, setNewPortfolioName] = useState("");
+  const [portfolioBusy, setPortfolioBusy] = useState(false);
+  const [portfolioSuccess, setPortfolioSuccess] = useState<string | null>(null);
 
   const loadPortfolios = useCallback(async () => {
     try {
@@ -208,7 +210,14 @@ export function EntityDataLayout() {
   );
 
   return (
-    <div className="grid min-w-0 gap-6 md:grid-cols-[280px_1fr]">
+    <div className="min-w-0 space-y-4">
+      {error ? (
+        <div className="rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">{error}</div>
+      ) : null}
+      {portfolioSuccess ? (
+        <div className="rounded border border-emerald-900/50 bg-emerald-950/25 px-3 py-2 text-sm text-emerald-200">{portfolioSuccess}</div>
+      ) : null}
+      <div className="grid min-w-0 gap-6 md:grid-cols-[280px_1fr]">
       <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-900/30 p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
@@ -224,29 +233,28 @@ export function EntityDataLayout() {
         </Link>
         <div className="mt-3 space-y-2">
           {portfolios.map((p) => (
-            <button
+            <div
               key={p.id}
-              type="button"
-              onClick={() => setSelectedPortfolio(p)}
               className={
-                "w-full rounded border px-3 py-2 text-left text-sm " +
+                "flex w-full items-center gap-2 rounded border px-3 py-2 text-sm " +
                 (selectedPortfolio?.id === p.id ? "border-slate-600 bg-slate-900 text-slate-100" : "border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-700")
               }
             >
-              <div className="flex w-full items-center justify-between gap-2">
-                <div className="min-w-0 flex-1 truncate font-medium">{p.name}</div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeletePortfolio(p.id);
-                  }}
-                  className="shrink-0 rounded px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/90 hover:text-white"
-                >
-                  {t("common.delete")}
-                </button>
-              </div>
-            </button>
+              <button
+                type="button"
+                onClick={() => setSelectedPortfolio(p)}
+                className="min-w-0 flex-1 truncate text-left font-medium text-inherit"
+              >
+                {p.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeletePortfolio(p.id)}
+                className="shrink-0 rounded px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/90 hover:text-white"
+              >
+                {t("common.delete")}
+              </button>
+            </div>
           ))}
         </div>
         <div className="mt-4 border-t border-slate-800 pt-4">
@@ -261,29 +269,43 @@ export function EntityDataLayout() {
             />
             <button
               type="button"
-              disabled={!newPortfolioName.trim() || portfolios.length >= FREE_PLAN_LIMITS.MAX_PORTFOLIOS}
+              disabled={
+                !newPortfolioName.trim() ||
+                portfolios.length >= FREE_PLAN_LIMITS.MAX_PORTFOLIOS ||
+                portfolioBusy
+              }
               title={portfolios.length >= FREE_PLAN_LIMITS.MAX_PORTFOLIOS ? t("entity.maxPortfoliosReached", { max: FREE_PLAN_LIMITS.MAX_PORTFOLIOS }) : undefined}
               onClick={async () => {
-                if (!newPortfolioName.trim()) return;
+                const nm = newPortfolioName.trim();
+                if (!nm) {
+                  setPortfolioSuccess(null);
+                  setError(t("entity.portfolioNameRequired"));
+                  return;
+                }
                 setError(null);
+                setPortfolioSuccess(null);
+                setPortfolioBusy(true);
                 try {
-                  await api.createPortfolio({ name: newPortfolioName.trim() });
+                  await api.createPortfolio({ name: nm });
                   setNewPortfolioName("");
-                  loadPortfolios();
+                  await loadPortfolios();
+                  setPortfolioSuccess(t("entity.portfolioAddedToast"));
+                  window.setTimeout(() => setPortfolioSuccess(null), 5000);
                 } catch (e: unknown) {
                   setError(parseApiError(e));
+                } finally {
+                  setPortfolioBusy(false);
                 }
               }}
               className="rounded bg-indigo-600 px-2 py-1.5 text-sm text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {t("common.add")}
+              {portfolioBusy ? t("common.loading") : t("common.add")}
             </button>
           </div>
         </div>
       </section>
 
       <section className="min-w-0 space-y-4">
-        {error ? <div className="rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">{error}</div> : null}
         <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
           <div className="flex items-center justify-between">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -477,6 +499,7 @@ export function EntityDataLayout() {
           <EntityConceptGuideModal locale={locale} onClose={() => setConceptGuideOpen(false)} />
         ) : null}
       </section>
+      </div>
     </div>
   );
 }
