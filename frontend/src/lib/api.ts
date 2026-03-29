@@ -46,6 +46,15 @@ export function formatFastApiDetail(detail: unknown): string {
   return String(detail);
 }
 
+function twelveTypeToAssetClass(type: string): string {
+  const t = (type || "").toLowerCase();
+  if (t.includes("etf")) return "etf";
+  if (t.includes("crypto")) return "crypto";
+  if (t.includes("future")) return "futures";
+  if (t.includes("index")) return "index";
+  return "equity";
+}
+
 export function parseApiError(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) {
     const raw = (e as ApiError).message;
@@ -115,6 +124,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       if (text.startsWith("<") || text.length > 200) message = `Request failed (${res.status})`;
     }
+    if (res.status === 429) {
+      const low = message.toLowerCase();
+      if (low.includes("rate limit") || low.includes("too many")) {
+        message = "__RATE_LIMIT__";
+      }
+    }
     // 401: clear token and refresh cookie to avoid redirect loop
     if (typeof window !== "undefined" && res.status === 401) {
       clearTokens();
@@ -154,6 +169,21 @@ export const api = {
       body: JSON.stringify({ email, password })
     }),
   refresh: () => request<{ access_token: string; token_type: string }>("/api/auth/refresh", { method: "POST" }),
+  getEntityNews: (entityId: string, mode: "target" | "keywords") =>
+    request<{
+      mode: string;
+      query: string | null;
+      items: Array<{
+        title: string;
+        source: string;
+        published_at: string | null;
+        url: string | null;
+        snippet: string | null;
+        matched_by: string | null;
+      }>;
+      cached: boolean;
+      error: string | null;
+    }>(`/api/entities/${encodeURIComponent(entityId)}/news?mode=${encodeURIComponent(mode)}`),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   listUsers: () =>
     request<
@@ -474,6 +504,41 @@ export const api = {
         category ? `&category=${encodeURIComponent(category)}` : ""
       }`
     ),
+
+  /** Twelve Data-backed symbol search (+ DB fallback); same row shape as searchInstruments for entity UI. */
+  marketSearchAsInstruments: async (
+    q: string,
+    opts?: { assetClass?: string; category?: string; exchange?: string }
+  ) => {
+    const p = new URLSearchParams();
+    p.set("q", q);
+    if (opts?.assetClass) p.set("asset_class", opts.assetClass);
+    if (opts?.category) p.set("category", opts.category);
+    if (opts?.exchange) p.set("exchange", opts.exchange);
+    const res = await request<{
+      data: Array<{ symbol: string; name: string; exchange: string; type: string; instrument_id: string }>;
+      data_source: string;
+    }>(`/api/market/search?${p.toString()}`);
+    return (res.data ?? []).map((row) => ({
+      id: row.instrument_id,
+      symbol: row.symbol,
+      display_name: row.name,
+      asset_class: twelveTypeToAssetClass(row.type),
+      market: row.exchange || null,
+      exchange: row.exchange || null,
+      description: null,
+      country: null,
+      currency: null,
+    }));
+  },
+
+  /** Twelve Data time series (+ snapshot fallback); same envelope as ohlcv for charts. */
+  marketTimeSeries: async (symbol: string, period: string) => {
+    const res = await request<any>(
+      `/api/market/time_series?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}`
+    );
+    return res?.data ?? res;
+  },
 
   aiKeywordSuggestions: (p: { idea: string; instrument?: string | null; asset_class?: string | null; portfolio?: string | null }) =>
     request<{ keywords: string[] }>("/api/ai/keyword-suggestions", { method: "POST", body: JSON.stringify(p) }),

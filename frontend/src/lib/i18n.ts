@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState } from "react";
 
 import { i18nOverlay } from "@/lib/i18nOverlay";
 
@@ -46,6 +46,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "auth.registerEmailHint": "Use a valid email you can access. This will be your sign-in address.",
     "auth.registerEmailInvalid": "Enter a valid email address.",
     "auth.registerPasswordHint": "Password: at least 8 characters.",
+    "auth.rateLimit": "Too many requests. Please wait a few seconds and try again.",
     "auth.mvpCredits": "MVP auth. Default plan starts with 10,000 credits.",
     // Nav
     "nav.dashboard": "Dashboard",
@@ -247,6 +248,18 @@ const translations: Record<Locale, Record<string, string>> = {
     "entity.saveTerms": "Save terms",
     "entity.addTermPlaceholder": "Add term, press Enter",
     "entity.price": "Price",
+    "entity.newsTitle": "News",
+    "entity.newsTargetTab": "Target news",
+    "entity.newsKeywordTab": "Keyword news",
+    "entity.newsRefresh": "Refresh",
+    "entity.newsLoading": "Loading headlines…",
+    "entity.newsEmptyTarget": "Bind a primary instrument or set a target name to see focused headlines.",
+    "entity.newsEmptyKeywords": "No keywords yet. Add terms above to see keyword-based news.",
+    "entity.newsError": "Could not load news. Try refresh in a moment.",
+    "entity.newsNoSnippet": "",
+    "entity.newsCached": "cached",
+    "entity.newsCount": "{count} headlines",
+    "entity.newsNoHeadlines": "No headlines matched this query yet.",
     "entity.relatedMarketData": "Related Market Data",
     "entity.addedItems": "{count} / {max} added items",
     "entity.addRelatedInstrument": "Add related instrument",
@@ -354,6 +367,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "auth.registerEmailHint": "请填写可收邮件的有效邮箱，作为登录账号。",
     "auth.registerEmailInvalid": "请输入有效的邮箱地址。",
     "auth.registerPasswordHint": "密码：至少 8 位。",
+    "auth.rateLimit": "请求过于频繁，请稍后再试。",
     "auth.mvpCredits": "MVP 认证。默认方案含 10,000 积分。",
     "nav.dashboard": "仪表盘",
     "nav.research": "交叉对比",
@@ -543,6 +557,18 @@ const translations: Record<Locale, Record<string, string>> = {
     "entity.saveTerms": "保存词条",
     "entity.addTermPlaceholder": "添加词条，按回车",
     "entity.price": "价格",
+    "entity.newsTitle": "新闻",
+    "entity.newsTargetTab": "标的资讯",
+    "entity.newsKeywordTab": "关键词资讯",
+    "entity.newsRefresh": "刷新",
+    "entity.newsLoading": "加载资讯中…",
+    "entity.newsEmptyTarget": "请先绑定主标的或填写目标名称，以获取相关新闻。",
+    "entity.newsEmptyKeywords": "暂无关键词。请在上方添加词条后再查看。",
+    "entity.newsError": "新闻加载失败，请稍后重试。",
+    "entity.newsNoSnippet": "",
+    "entity.newsCached": "已缓存",
+    "entity.newsCount": "{count} 条",
+    "entity.newsNoHeadlines": "暂无匹配的新闻头条。",
     "entity.relatedMarketData": "关联市场数据",
     "entity.addedItems": "已添加 {count} / {max} 项",
     "entity.addRelatedInstrument": "添加关联标的",
@@ -648,6 +674,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "auth.registerEmailHint": "Usa un email válido al que tengas acceso; será tu correo de acceso.",
     "auth.registerEmailInvalid": "Introduce un email válido.",
     "auth.registerPasswordHint": "Contraseña: al menos 8 caracteres.",
+    "auth.rateLimit": "Demasiadas solicitudes. Espera unos segundos e inténtalo de nuevo.",
     "auth.mvpCredits": "Auth MVP. El plan por defecto incluye 10.000 créditos.",
     "nav.dashboard": "Panel",
     "nav.research": "Comparación cruzada",
@@ -994,6 +1021,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "auth.registerEmailHint": "Use um email válido que você acesse; será o seu endereço de login.",
     "auth.registerEmailInvalid": "Introduza um email válido.",
     "auth.registerPasswordHint": "Senha: pelo menos 8 caracteres.",
+    "auth.rateLimit": "Demasiados pedidos. Aguarde alguns segundos e tente novamente.",
     "macro.indexWatchlist": "Índices",
     "macro.addIndex": "+ Adicionar",
     "macro.addIndexModalTitle": "Adicionar à lista",
@@ -1039,6 +1067,15 @@ function getStoredLocale(): Locale {
   return "en";
 }
 
+/** Stable copy for auth errors (avoids returning bare i18n keys if `t` runs before locale hydrates). */
+export function getRateLimitMessage(locale: Locale): string {
+  return (
+    translations[locale]?.["auth.rateLimit"] ??
+    translations.en["auth.rateLimit"] ??
+    "Too many requests. Please wait a few seconds and try again."
+  );
+}
+
 const I18nContext = createContext<{
   locale: Locale;
   setLocale: (l: Locale) => void;
@@ -1057,7 +1094,7 @@ function interpolate(str: string, params?: Record<string, string | number>): str
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("en");
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setLocaleState(getStoredLocale());
   }, []);
 

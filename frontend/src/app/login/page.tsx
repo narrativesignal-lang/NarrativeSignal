@@ -1,22 +1,23 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 import { api, parseApiError } from "@/lib/api";
 import { setAccessToken } from "@/lib/auth";
-import { useI18n } from "@/lib/i18n";
+import { getRateLimitMessage, useI18n } from "@/lib/i18n";
 import { LanguageSelector } from "@/components/LanguageSelector";
 
 function LoginPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     const reason = searchParams.get("reason");
@@ -29,6 +30,8 @@ function LoginPageContent() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setError(null);
     setLoading(true);
     const loginId = email.trim();
@@ -36,6 +39,8 @@ function LoginPageContent() {
       if (mode === "register") {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginId)) {
           setError(t("auth.registerEmailInvalid"));
+          setLoading(false);
+          submittingRef.current = false;
           return;
         }
         await api.register(loginId, password);
@@ -45,9 +50,15 @@ function LoginPageContent() {
       window.dispatchEvent(new Event("narrative:auth-change"));
       router.replace("/dashboard");
     } catch (err: unknown) {
-      setError(parseApiError(err));
+      const raw = parseApiError(err);
+      const is429 =
+        (typeof err === "object" && err !== null && "status" in err && (err as { status?: number }).status === 429) ||
+        raw === "__RATE_LIMIT__" ||
+        /rate\s*limit/i.test(raw);
+      setError(is429 ? getRateLimitMessage(locale) : raw);
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   }
 
@@ -62,7 +73,7 @@ function LoginPageContent() {
           {t("auth.mvpCredits")}
         </p>
 
-        <form className="mt-6 space-y-3" onSubmit={onSubmit}>
+        <form className="mt-6 space-y-3" onSubmit={onSubmit} noValidate>
           <label className="block">
             <div className="text-xs text-slate-400">{t("auth.email")}</div>
             <input

@@ -1,23 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { api, parseApiError } from "@/lib/api";
 import { setAccessToken } from "@/lib/auth";
-import { useI18n } from "@/lib/i18n";
+import { getRateLimitMessage, useI18n } from "@/lib/i18n";
 
 export function AuthModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setError(null);
     setLoading(true);
     const loginId = email.trim();
@@ -25,6 +28,8 @@ export function AuthModal({ onClose }: { onClose: () => void }) {
       if (mode === "register") {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginId)) {
           setError(t("auth.registerEmailInvalid"));
+          setLoading(false);
+          submittingRef.current = false;
           return;
         }
         await api.register(loginId, password);
@@ -35,9 +40,15 @@ export function AuthModal({ onClose }: { onClose: () => void }) {
       onClose();
       router.replace("/dashboard");
     } catch (err: unknown) {
-      setError(parseApiError(err));
+      const raw = parseApiError(err);
+      const is429 =
+        (typeof err === "object" && err !== null && "status" in err && (err as { status?: number }).status === 429) ||
+        raw === "__RATE_LIMIT__" ||
+        /rate\s*limit/i.test(raw);
+      setError(is429 ? getRateLimitMessage(locale) : raw);
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   }
 
@@ -76,7 +87,7 @@ export function AuthModal({ onClose }: { onClose: () => void }) {
           <p className="text-sm text-slate-400">
             {t("auth.defaultPlan")}
           </p>
-          <form className="mt-4 space-y-4" onSubmit={onSubmit}>
+          <form className="mt-4 space-y-4" onSubmit={onSubmit} noValidate>
             <label className="block">
               <div className="text-xs font-medium text-slate-400">{t("auth.email")}</div>
               <input
@@ -116,6 +127,7 @@ export function AuthModal({ onClose }: { onClose: () => void }) {
               type="submit"
               className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
               disabled={loading}
+              aria-busy={loading}
             >
               {loading ? t("auth.working") : mode === "login" ? t("auth.signIn") : t("auth.registerSignIn")}
             </button>

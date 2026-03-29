@@ -79,12 +79,9 @@ export function EntityDataLayout() {
     }
     const t = setTimeout(() => {
       api
-        .searchInstruments(
-          instrumentQuery.trim(),
-          undefined,
-          undefined,
-          instrumentCategory || undefined
-        )
+        .marketSearchAsInstruments(instrumentQuery.trim(), {
+          category: instrumentCategory || undefined,
+        })
         .then((list) =>
           setInstrumentResults(
             list.map((x) => ({

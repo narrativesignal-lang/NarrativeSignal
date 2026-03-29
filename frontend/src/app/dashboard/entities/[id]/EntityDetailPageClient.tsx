@@ -37,6 +37,7 @@ import { EntityMetricDerivedBlock } from "@/components/entity/EntityMetricDerive
 import { WorkspaceChartErrorBoundary } from "@/components/entity/WorkspaceChartErrorBoundary";
 import { SectionHelp } from "@/components/SectionHelp";
 import { EntityEventTimeline } from "@/components/entity/EntityEventTimeline";
+import { EntityNewsPanel } from "@/components/entity/EntityNewsPanel";
 import { DEFAULT_ANALYSIS_PERIOD, isValidAnalysisPeriod } from "@/lib/analysisPeriods";
 import type { ChartVisibleTimeRange } from "@/lib/chartTimeUnix";
 import { INSTRUMENT_CATEGORIES } from "@/lib/instrumentCategories";
@@ -153,6 +154,9 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [removeWorkspaceChartId, setRemoveWorkspaceChartId] = useState<string | null>(null);
   const layoutRestoredRef = useRef(false);
   const skipNextChartPersistRef = useRef(false);
+  const leftColRef = useRef<HTMLDivElement>(null);
+  const priceSectionRef = useRef<HTMLElement>(null);
+  const [newsPanelHeight, setNewsPanelHeight] = useState(360);
 
   const [narrativeFlowPeriod, setNarrativeFlowPeriod] = useState<string>(DEFAULT_ANALYSIS_PERIOD);
   const [trendingData, setTrendingData] = useState<{
@@ -163,6 +167,28 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   } | null>(null);
 
   const ENTITY_LOAD_TIMEOUT_MS = 15000;
+
+  const recalcNewsHeight = useCallback(() => {
+    const col = leftColRef.current;
+    const price = priceSectionRef.current;
+    if (!col || !price) return;
+    const top = col.getBoundingClientRect().top;
+    const bottom = price.getBoundingClientRect().bottom;
+    const h = bottom - top;
+    if (h > 120) setNewsPanelHeight(Math.round(h));
+  }, []);
+
+  useEffect(() => {
+    recalcNewsHeight();
+    const ro = new ResizeObserver(() => recalcNewsHeight());
+    if (leftColRef.current) ro.observe(leftColRef.current);
+    if (priceSectionRef.current) ro.observe(priceSectionRef.current);
+    window.addEventListener("resize", recalcNewsHeight);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", recalcNewsHeight);
+    };
+  }, [recalcNewsHeight, entity?.id, priceSectionHeight, ohlcvLoaded, ohlcv?.bars?.length]);
 
   const applyLoadedEntity = useCallback((e: EntityDetail) => {
     skipNextChartPersistRef.current = true;
@@ -271,7 +297,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     setOhlcvLoading(true);
     setOhlcvLoaded(false);
     api
-      .ohlcv(entity.instrument.symbol, period)
+      .marketTimeSeries(entity.instrument.symbol, period)
       .then((res) =>
         setOhlcv({
           symbol: res.symbol,
@@ -339,7 +365,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     const t = setTimeout(() => {
       const category = instrumentCategory || undefined;
       api
-        .searchInstruments(instrumentQuery.trim(), undefined, undefined, category)
+        .marketSearchAsInstruments(instrumentQuery.trim(), { category })
         .then(setInstrumentResults)
         .catch(() => setInstrumentResults([]));
     }, 300);
@@ -356,7 +382,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     const category = bindInstrumentType === "hk" ? "hong kong" : undefined;
     const t = setTimeout(() => {
       api
-        .searchInstruments(q, assetClass, undefined, category)
+        .marketSearchAsInstruments(q, { assetClass, category })
         .then(setBindInstrumentResults)
         .catch(() => setBindInstrumentResults([]));
     }, 300);
@@ -496,7 +522,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
       const results = await Promise.all(
         symbols.map(async (symbol) => {
           try {
-            const res = await api.ohlcv(symbol, comparisonPeriod);
+            const res = await api.marketTimeSeries(symbol, comparisonPeriod);
             return { symbol, bars: normalizeOhlcvBars(res?.bars ?? []) };
           } catch {
             return { symbol, bars: [] as CandleBar[] };
@@ -728,7 +754,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         ) : null}
 
         <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,400px)] lg:items-start">
-        <div className="min-w-0 space-y-6">
+        <div ref={leftColRef} className="min-w-0 space-y-6">
         {/* Terms */}
         <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
           <div className="flex items-center justify-between">
@@ -777,7 +803,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         </section>
 
         {/* Price chart */}
-        <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+        <section ref={priceSectionRef} className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
               <h2 className="text-sm font-semibold text-slate-200">{t("entity.price")}</h2>
@@ -1008,6 +1034,13 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         </div>
 
         <aside className="min-w-0 space-y-3 lg:sticky lg:top-4 lg:self-start">
+          <EntityNewsPanel
+            entityId={id}
+            heightPx={newsPanelHeight}
+            instrument={entity.instrument ? { symbol: entity.instrument.symbol, display_name: entity.instrument.display_name ?? null } : null}
+            entityName={entity.name ?? ""}
+            terms={terms}
+          />
           <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">

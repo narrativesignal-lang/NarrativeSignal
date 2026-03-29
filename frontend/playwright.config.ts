@@ -15,7 +15,8 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
-    timeout: 60_000,
+    // Avoid stale bundles when a long-lived `next dev` was started before recent i18n/UI changes.
+    reuseExistingServer: process.env.PW_REUSE_DEV_SERVER === "1",
+    timeout: 120_000,
   },
 });

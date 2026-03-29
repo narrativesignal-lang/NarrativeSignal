@@ -52,7 +52,7 @@ export function MarketDataPanel({
       const next: CardData[] = [];
       for (const symbol of symbols) {
         try {
-          const res = await api.ohlcv(symbol, "1D");
+          const res = await api.marketTimeSeries(symbol, "1D");
           const bars = (res?.bars || []) as Array<{ close: number }>;
           if (bars.length >= 2) {
             const close = bars[bars.length - 1].close;
