@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { EntityConceptGuideModal } from "@/components/entity/EntityConceptGuideModal";
 import { SectionHelp } from "@/components/SectionHelp";
-import { api, parseApiError } from "@/lib/api";
+import { api, instrumentSearchNeedsResolve, parseApiError, toInstrumentBindResolve } from "@/lib/api";
 import type { FeatureGuideLocale } from "@/content/featureGuide";
 import { featureGuideContent } from "@/content/featureGuide";
 import { useI18n } from "@/lib/i18n";
@@ -79,9 +79,7 @@ export function EntityDataLayout() {
     }
     const t = setTimeout(() => {
       api
-        .marketSearchAsInstruments(instrumentQuery.trim(), {
-          category: instrumentCategory || undefined,
-        })
+        .searchInstruments(instrumentQuery.trim(), undefined, undefined, instrumentCategory || undefined)
         .then((list) =>
           setInstrumentResults(
             list.map((x) => ({
@@ -92,6 +90,7 @@ export function EntityDataLayout() {
               market: x.market,
               exchange: x.exchange,
               country: x.country,
+              data_origin: x.data_origin,
             }))
           )
         )
@@ -127,6 +126,9 @@ export function EntityDataLayout() {
         portfolio_id: selectedPortfolio.id,
         name: entityName.trim(),
         instrument_id: selectedInstrument?.id ?? null,
+        ...(selectedInstrument && instrumentSearchNeedsResolve(selectedInstrument)
+          ? { instrument_resolve: toInstrumentBindResolve(selectedInstrument) }
+          : {}),
         terms,
       });
       setEntities(await api.listEntities(selectedPortfolio.id));

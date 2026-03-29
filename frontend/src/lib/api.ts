@@ -55,6 +55,32 @@ function twelveTypeToAssetClass(type: string): string {
   return "equity";
 }
 
+/** Payload to persist an instrument when search returned an ephemeral id (ext-pending-*). */
+export type InstrumentBindResolve = {
+  symbol: string;
+  asset_class: string;
+  exchange?: string | null;
+  display_name?: string | null;
+};
+
+export function instrumentSearchNeedsResolve(hit: { id: string; data_origin?: string }): boolean {
+  return hit.data_origin === "external_fallback" || hit.id.startsWith("ext-pending-");
+}
+
+export function toInstrumentBindResolve(hit: {
+  symbol: string;
+  asset_class: string;
+  exchange?: string | null;
+  display_name?: string | null;
+}): InstrumentBindResolve {
+  return {
+    symbol: hit.symbol,
+    asset_class: hit.asset_class,
+    exchange: hit.exchange ?? null,
+    display_name: hit.display_name ?? null,
+  };
+}
+
 export function parseApiError(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) {
     const raw = (e as ApiError).message;
@@ -310,10 +336,22 @@ export const api = {
       created_at: string;
       updated_at: string;
     }>(`/api/entities/${entityId}`),
-  createEntity: (p: { portfolio_id: string; name: string; instrument_id?: string | null; terms?: string[] }) =>
-    request<any>("/api/entities", { method: "POST", body: JSON.stringify(p) }),
-  updateEntity: (id: string, p: { name?: string; instrument_id?: string | null; chart_layout?: Record<string, unknown> | null }) =>
-    request<any>(`/api/entities/${id}`, { method: "PATCH", body: JSON.stringify(p) }),
+  createEntity: (p: {
+    portfolio_id: string;
+    name: string;
+    instrument_id?: string | null;
+    instrument_resolve?: InstrumentBindResolve | null;
+    terms?: string[];
+  }) => request<any>("/api/entities", { method: "POST", body: JSON.stringify(p) }),
+  updateEntity: (
+    id: string,
+    p: {
+      name?: string;
+      instrument_id?: string | null;
+      instrument_resolve?: InstrumentBindResolve | null;
+      chart_layout?: Record<string, unknown> | null;
+    }
+  ) => request<any>(`/api/entities/${id}`, { method: "PATCH", body: JSON.stringify(p) }),
   deleteEntity: (id: string) => request<void>(`/api/entities/${id}`, { method: "DELETE" }),
   replaceEntityTerms: (entityId: string, terms: string[]) =>
     request<Array<{ id: string; term: string; normalized_term: string; created_at: string }>>(`/api/entities/${entityId}/terms`, { method: "PUT", body: JSON.stringify({ terms }) }),
@@ -322,7 +360,10 @@ export const api = {
     request<Array<{ id: string; instrument_id: string; symbol: string; display_name: string | null; asset_class: string }>>(
       `/api/entities/${entityId}/related-instruments`
     ),
-  addEntityRelatedInstrument: (entityId: string, payload: { instrument_id: string }) =>
+  addEntityRelatedInstrument: (
+    entityId: string,
+    payload: { instrument_id: string; instrument_resolve?: InstrumentBindResolve | null }
+  ) =>
     request<{ id: string; instrument_id: string; symbol: string; display_name: string | null; asset_class: string }>(
       `/api/entities/${entityId}/related-instruments`,
       { method: "POST", body: JSON.stringify(payload) }
@@ -496,6 +537,7 @@ export const api = {
         description: string | null;
         country: string | null;
         currency: string | null;
+        data_origin?: "local_db" | "external_fallback";
       }>
     >(
       `/api/instruments/search?q=${encodeURIComponent(q)}${

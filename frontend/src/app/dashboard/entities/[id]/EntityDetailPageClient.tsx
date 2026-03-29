@@ -4,7 +4,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
-import { api, parseApiError } from "@/lib/api";
+import { api, instrumentSearchNeedsResolve, parseApiError, toInstrumentBindResolve } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { CandleChart } from "@/components/CandleChart";
 import { normalizeOhlcvBars, type CandleBar } from "@/lib/ohlcvBars";
@@ -41,6 +41,8 @@ import { EntityNewsPanel } from "@/components/entity/EntityNewsPanel";
 import { DEFAULT_ANALYSIS_PERIOD, isValidAnalysisPeriod } from "@/lib/analysisPeriods";
 import type { ChartVisibleTimeRange } from "@/lib/chartTimeUnix";
 import { INSTRUMENT_CATEGORIES } from "@/lib/instrumentCategories";
+
+type PortfolioInstrumentSearchHit = Awaited<ReturnType<typeof api.searchInstruments>>[number];
 
 function Loading3DPlaceholder() {
   const { t } = useI18n();
@@ -117,7 +119,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [addRelatedOpen, setAddRelatedOpen] = useState(false);
   const [instrumentQuery, setInstrumentQuery] = useState("");
   const [instrumentCategory, setInstrumentCategory] = useState("");
-  const [instrumentResults, setInstrumentResults] = useState<Array<{ id: string; symbol: string; display_name: string | null; asset_class: string; exchange?: string | null; country?: string | null }>>([]);
+  const [instrumentResults, setInstrumentResults] = useState<PortfolioInstrumentSearchHit[]>([]);
   const [comparisonPeriod, setComparisonPeriod] = useState<(typeof PERIODS)[number]>("1M");
   const [comparisonInstrumentIds, setComparisonInstrumentIds] = useState<string[]>([]);
   const [comparisonCandles, setComparisonCandles] = useState<Array<{ symbol: string; bars: CandleBar[] }>>([]);
@@ -131,18 +133,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [bindInstrumentOpen, setBindInstrumentOpen] = useState(false);
   const [bindInstrumentQuery, setBindInstrumentQuery] = useState("");
   const [bindInstrumentType, setBindInstrumentType] = useState<"all" | "equity" | "etf" | "futures" | "crypto" | "index" | "hk">("all");
-  const [bindInstrumentResults, setBindInstrumentResults] = useState<
-    Array<{
-      id: string;
-      symbol: string;
-      display_name: string | null;
-      asset_class: string;
-      market: string | null;
-      description: string | null;
-      country: string | null;
-      currency: string | null;
-    }>
-  >([]);
+  const [bindInstrumentResults, setBindInstrumentResults] = useState<PortfolioInstrumentSearchHit[]>([]);
   const [bindInstrumentLoading, setBindInstrumentLoading] = useState(false);
 
   const [priceSectionHeight, setPriceSectionHeight] = useState(RESIZE_DEFAULT_HEIGHT);
@@ -365,7 +356,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     const t = setTimeout(() => {
       const category = instrumentCategory || undefined;
       api
-        .marketSearchAsInstruments(instrumentQuery.trim(), { category })
+        .searchInstruments(instrumentQuery.trim(), undefined, undefined, category)
         .then(setInstrumentResults)
         .catch(() => setInstrumentResults([]));
     }, 300);
@@ -382,7 +373,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     const category = bindInstrumentType === "hk" ? "hong kong" : undefined;
     const t = setTimeout(() => {
       api
-        .marketSearchAsInstruments(q, { assetClass, category })
+        .searchInstruments(q, assetClass, undefined, category)
         .then(setBindInstrumentResults)
         .catch(() => setBindInstrumentResults([]));
     }, 300);
@@ -390,17 +381,20 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   }, [bindInstrumentOpen, bindInstrumentQuery, bindInstrumentType]);
 
   const addRelatedInstrument = useCallback(
-    async (instrumentId: string) => {
+    async (hit: PortfolioInstrumentSearchHit) => {
       if (!id) return;
       setError(null);
       try {
-        await api.addEntityRelatedInstrument(id, { instrument_id: instrumentId });
+        await api.addEntityRelatedInstrument(id, {
+          instrument_id: hit.id,
+          ...(instrumentSearchNeedsResolve(hit) ? { instrument_resolve: toInstrumentBindResolve(hit) } : {}),
+        });
         setAddRelatedOpen(false);
         setInstrumentQuery("");
         setInstrumentResults([]);
         loadRelatedInstruments();
       } catch (e: unknown) {
-        setError((e as { message?: string })?.message ?? "Failed to add related instrument");
+        setError(parseApiError(e) || "Failed to add related instrument");
       }
     },
     [id, loadRelatedInstruments]
@@ -439,19 +433,26 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   }, []);
 
   const updateEntityInstrument = useCallback(
-    async (instrumentId: string | null) => {
+    async (hit: PortfolioInstrumentSearchHit | null) => {
       if (!id) return;
       setBindInstrumentLoading(true);
       setError(null);
       try {
-        await api.updateEntity(id, { instrument_id: instrumentId });
+        if (hit === null) {
+          await api.updateEntity(id, { instrument_id: null });
+        } else {
+          await api.updateEntity(id, {
+            instrument_id: hit.id,
+            ...(instrumentSearchNeedsResolve(hit) ? { instrument_resolve: toInstrumentBindResolve(hit) } : {}),
+          });
+        }
         const e = await api.getEntity(id);
         setEntity(e);
         setTerms((e.terms ?? []).map((t) => t.term));
         setComparisonInstrumentIds(e.instrument ? [e.instrument.id] : []);
         closeBindInstrument();
       } catch (e: unknown) {
-        setError((e as { message?: string })?.message ?? "Failed to update instrument");
+        setError(parseApiError(e) || "Failed to update instrument");
       } finally {
         setBindInstrumentLoading(false);
       }
@@ -460,8 +461,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   );
 
   const handleBindInstrumentSelect = useCallback(
-    (instrumentId: string) => {
-      updateEntityInstrument(instrumentId);
+    (hit: PortfolioInstrumentSearchHit) => {
+      void updateEntityInstrument(hit);
     },
     [updateEntityInstrument]
   );
@@ -1285,7 +1286,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                   <button
                     key={inst.id}
                     type="button"
-                    onClick={() => handleBindInstrumentSelect(inst.id)}
+                    onClick={() => handleBindInstrumentSelect(inst)}
                     disabled={bindInstrumentLoading}
                     className="w-full rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
                   >
@@ -1363,7 +1364,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                   <button
                     key={inst.id}
                     type="button"
-                    onClick={() => addRelatedInstrument(inst.id)}
+                    onClick={() => addRelatedInstrument(inst)}
                     className="w-full rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
                   >
                     {inst.symbol}

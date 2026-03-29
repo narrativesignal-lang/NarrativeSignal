@@ -13,6 +13,7 @@ export type InstrumentSearchHit = {
   asset_class: string;
   exchange?: string | null;
   country?: string | null;
+  data_origin?: "local_db" | "external_fallback";
 };
 
 const MAX_SUGGESTIONS = 8;
