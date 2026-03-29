@@ -1,5 +1,5 @@
 /**
- * Best-effort Next.js cache cleanup. Never exits with failure — avoids killing `npm run dev`
+ * Best-effort Next.js cache cleanup. Never exits with failure — avoids killing `pnpm run dev`
  * when `.next` is on a Docker volume / locked (EBUSY).
  *
  * Order: remove smaller subtrees first (often where stale webpack chunks live), then whole `.next`.

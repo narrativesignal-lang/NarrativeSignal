@@ -13,7 +13,7 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "npm run dev",
+    command: "pnpm run dev",
     url: "http://localhost:3000",
     // Avoid stale bundles when a long-lived `next dev` was started before recent i18n/UI changes.
     reuseExistingServer: process.env.PW_REUSE_DEV_SERVER === "1",
