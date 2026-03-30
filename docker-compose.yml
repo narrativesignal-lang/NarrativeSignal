@@ -24,6 +24,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/narrative
       REDIS_URL: redis://redis:6379/0
+      TWELVE_API_KEY: ${TWELVE_API_KEY:-}
     depends_on:
       - postgres
       - redis
@@ -74,9 +75,9 @@ services:
       - backend
     ports:
       - "127.0.0.1:3000:3000"
-    # `npm run dev` runs clean first (see frontend/package.json).
+    # `pnpm run dev` runs clean first (see frontend/package.json).
     # Named volume for `.next` so host bind-mount never leaves stale webpack chunks in the container.
-    command: ["sh", "-c", "npm install && npm run dev"]
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run dev"]
     volumes:
       - ./frontend:/app
       - /app/node_modules

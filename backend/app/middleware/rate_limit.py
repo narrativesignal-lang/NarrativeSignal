@@ -3,6 +3,9 @@ ASGI middleware: Redis-backed rate limits for /api (V1).
 
 Mounted after CORSMiddleware so 429 responses still pass through CORS wrapping.
 Skips OPTIONS (preflight). Does not apply to /healthz, /docs, etc.
+
+For POST /api/auth/register and /api/auth/login, buffers the body once so JSON email
+can be logged on rate-limit reject without consuming the stream for downstream handlers.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from app.core.rate_limit import client_ip_from_scope, enforce_rate_limits
 
 API_PREFIX = "/api"
 RATE_LIMIT_BODY = json.dumps({"detail": "rate limit exceeded"}).encode("utf-8")
+
+_AUTH_BODY_PATHS = frozenset({"/api/auth/register", "/api/auth/login"})
 
 
 class RateLimitMiddleware:
@@ -40,11 +45,44 @@ class RateLimitMiddleware:
         ip = client_ip_from_scope(headers, client)
         auth = hdr_map.get("authorization")
 
-        if not await enforce_rate_limits(client_ip=ip, authorization_header=auth, path=path):
+        email_hint: str | None = None
+        receive_ = receive
+
+        if scope.get("method") == "POST" and path in _AUTH_BODY_PATHS:
+            body_chunks: list[bytes] = []
+            more = True
+            while more:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                body_chunks.append(message.get("body", b""))
+                more = bool(message.get("more_body", False))
+            body_bytes = b"".join(body_chunks)
+            if body_bytes:
+                try:
+                    parsed = json.loads(body_bytes.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        em = parsed.get("email")
+                        if em and isinstance(em, str):
+                            email_hint = em.strip()[:160]
+                except Exception:
+                    pass
+
+            async def receive_replay() -> dict:
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+            receive_ = receive_replay
+
+        if not await enforce_rate_limits(
+            client_ip=ip,
+            authorization_header=auth,
+            path=path,
+            email_hint=email_hint,
+        ):
             await send429(send)
             return
 
-        await self.app(scope, receive, send)
+        await self.app(scope, receive_, send)
 
 
 async def send429(send: Send) -> None:

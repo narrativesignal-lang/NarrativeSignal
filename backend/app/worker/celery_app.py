@@ -40,6 +40,24 @@ celery_app.conf.update(
             "task": "app.worker.tasks.refresh_market_quotes",
             "schedule": crontab(minute="*/15"),
         },
+        # Twelve fixed warm pool: Redis + DB snapshots for validated symbols only (conservative credits).
+        "warm-pool-twelve-quotes-15m": {
+            "task": "app.worker.tasks.warm_pool_twelve_quotes",
+            "schedule": crontab(minute="*/15"),
+        },
+        "warm-pool-twelve-time-series-1m-hourly": {
+            "task": "app.worker.tasks.warm_pool_twelve_time_series_1m",
+            "schedule": crontab(minute="5"),
+        },
+        # Twelve dynamic active pool (global): separate from fixed warm pool list + schedules.
+        "active-pool-twelve-quotes-30m": {
+            "task": "app.worker.tasks.refresh_active_pool_twelve_quotes",
+            "schedule": crontab(minute="8,38"),
+        },
+        "active-pool-twelve-time-series-1m-2h": {
+            "task": "app.worker.tasks.refresh_active_pool_twelve_time_series_1m",
+            "schedule": crontab(minute="22", hour="*/2"),
+        },
         # OHLCV: shared snapshots for the same symbol universe (less frequent than quotes).
         "refresh-market-ohlcv-every-6-hours": {
             "task": "app.worker.tasks.refresh_market_ohlcv_snapshots",

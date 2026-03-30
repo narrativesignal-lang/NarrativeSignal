@@ -57,7 +57,7 @@
 
 ```bash
 cd frontend
-npm run test:e2e
+pnpm run test:e2e
 ```
 
 Ensure Docker stack is running (`docker compose up -d`) so frontend is available at `localhost:3000`.

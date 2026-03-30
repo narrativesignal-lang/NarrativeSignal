@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+
 import redis
 from fastapi import APIRouter, Depends, Query, status, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_current_user_optional
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.macro_index import MacroIndex
+from app.models.portfolio import Instrument
 from app.models.user import User
 from app.services.market_indices_config import DEFAULT_INDICES_BY_CATEGORY, MAX_INDICES_PER_CATEGORY
 from app.models.data_subscription import MarketQuoteSnapshot
 
 from app.services.market_snapshots import (
+    load_last_good_quote,
     read_snapshot_rows_for_indices,
     resolve_ohlcv_bars,
     schedule_market_snapshot_refresh_for_symbols,
 )
+from app.services.twelve_data_service import get_quote as twelve_get_quote
+from app.services.twelve_data_service import get_time_series as twelve_get_time_series
+from app.services.twelve_data_service import search_symbol as twelve_search_symbol
+from app.services.instrument_search_service import (
+    ASSET_CLASS_BY_CATEGORY_SEARCH,
+    twelve_search_row_matches_filters,
+    upsert_instrument_from_twelve_symbol_row,
+)
+from app.services.market_provider_router import route_quote_provider, route_time_series_provider
+from app.services.symbol_mapping import map_symbol_for_twelve, normalize_user_symbol
 from app.services.subscriptions import register_instrument_quote_subscription
 from app.services.core_data_diag import record_cold_empty, record_first_paint_envelope, record_snapshot_hit
 
@@ -29,6 +43,114 @@ logger = logging.getLogger(__name__)
 
 def _data_source_from_stale(stale: bool) -> str:
     return "stale_fallback" if stale else "snapshot"
+
+
+def _ensure_instrument_twelve(db: Session, row: dict) -> str:
+    inst, _ = upsert_instrument_from_twelve_symbol_row(db, row, provider="twelvedata")
+    return str(inst.id)
+
+
+def _db_instrument_search_fallback(
+    db: Session,
+    q: str,
+    asset_class: str | None,
+    category: str | None,
+    exchange: str | None,
+    limit: int = 20,
+) -> list[dict]:
+    term = (q or "").strip()
+    if not term:
+        return []
+    s = f"%{term}%"
+    stmt = (
+        select(Instrument)
+        .where(Instrument.is_active.is_(True))
+        .where(
+            or_(
+                Instrument.symbol.ilike(s),
+                Instrument.display_name.ilike(s),
+                Instrument.description.ilike(s),
+            )
+        )
+    )
+    if asset_class:
+        stmt = stmt.where(Instrument.asset_class == asset_class)
+    elif category:
+        cat_lower = category.strip().lower()
+        if cat_lower == "hong kong" or cat_lower == "hk":
+            stmt = stmt.where(
+                (Instrument.country == "HK") | (Instrument.exchange == "HKEX") | (Instrument.market == "HK")
+            )
+        elif cat_lower in ASSET_CLASS_BY_CATEGORY_SEARCH:
+            stmt = stmt.where(Instrument.asset_class == ASSET_CLASS_BY_CATEGORY_SEARCH[cat_lower])
+    if exchange:
+        stmt = stmt.where(Instrument.exchange == exchange)
+    rows = db.scalars(stmt.limit(100)).all()
+
+    def score(inst: Instrument) -> int:
+        q_norm = term.lower()
+        sym = (inst.symbol or "").lower()
+        name = (inst.display_name or "").lower()
+        desc = (inst.description or "").lower()
+        sc = 0
+        if sym == q_norm:
+            sc += 100
+        elif sym.startswith(q_norm):
+            sc += 70
+        elif q_norm in sym:
+            sc += 50
+        if q_norm in name:
+            sc += 30
+        if q_norm in desc:
+            sc += 10
+        return sc
+
+    ranked = sorted(rows, key=score, reverse=True)[:limit]
+    return [
+        {
+            "symbol": r.symbol,
+            "name": r.display_name or r.symbol,
+            "exchange": r.exchange or "",
+            "type": r.asset_class,
+            "instrument_id": str(r.id),
+        }
+        for r in ranked
+    ]
+
+
+def _iso_to_unix_bar(bar: dict) -> dict:
+    t_iso = str(bar.get("time") or "")
+    unix = 0
+    try:
+        if t_iso.endswith("Z"):
+            dt = datetime.fromisoformat(t_iso.replace("Z", "+00:00"))
+        elif len(t_iso) == 10 and t_iso.count("-") == 2:
+            dt = datetime.fromisoformat(t_iso + "T00:00:00+00:00")
+        else:
+            dt = datetime.fromisoformat(t_iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        unix = int(dt.timestamp())
+    except Exception:
+        unix = 0
+    return {
+        "time": unix,
+        "open": float(bar.get("open") or 0),
+        "high": float(bar.get("high") or 0),
+        "low": float(bar.get("low") or 0),
+        "close": float(bar.get("close") or 0),
+        "volume": float(bar.get("volume") or 0),
+    }
+
+
+PERIOD_TO_TWELVE: dict[str, tuple[str, int]] = {
+    "1D": ("1day", 14),
+    "5D": ("1day", 10),
+    "1M": ("1day", 40),
+    "6M": ("1day", 200),
+    "1Y": ("1day", 400),
+    "MAX": ("1week", 520),
+}
 
 
 def _indices_top_envelope(rows: list[dict]) -> tuple[str, str, str | None, bool]:
@@ -51,31 +173,198 @@ def _indices_top_envelope(rows: list[dict]) -> tuple[str, str, str | None, bool]
 
 @router.get("/quote")
 def quote(symbol: str = Query(..., min_length=1, max_length=30), db: Session = Depends(get_db)) -> dict:
-    """Return latest persisted quote snapshot only (no external call in GET)."""
-    sym = symbol.upper()
+    """Twelve Data when configured (Redis-cached); else snapshot / last-good Redis (data_source=fallback)."""
+    raw_in = symbol
+    sym = normalize_user_symbol(symbol)
+    logger.info("symbol_normalized from=%s to=%s", raw_in, sym)
+    quote_prov = route_quote_provider(symbol)
+    logger.info("provider_route kind=quote symbol=%s provider=%s", sym, quote_prov)
+    twelve_sym = map_symbol_for_twelve(sym) if quote_prov == "twelvedata" else None
+    td = None
+    if quote_prov == "twelvedata" and twelve_sym:
+        logger.info("symbol_mapped provider=twelve from=%s to=%s", sym, twelve_sym)
+        td = twelve_get_quote(twelve_sym)
+        if td and td.get("price") is not None:
+            logger.info("market_quote symbol=%s twelve=attempted result=hit", sym)
+        else:
+            logger.info("market_quote symbol=%s twelve=attempted result=miss fallback=1", sym)
+    else:
+        logger.info("symbol_unmapped from=%s fallback=direct", sym)
+        logger.info("market_quote symbol=%s twelve=skipped_unsupported fallback=direct", sym)
+    if td and td.get("price") is not None:
+        price = float(td["price"])
+        pct_raw = td.get("percent_change")
+        chg_raw = td.get("change")
+        pct = float(pct_raw) if pct_raw is not None else None
+        chg = float(chg_raw) if chg_raw is not None else None
+        ts = str(td.get("timestamp") or datetime.now(timezone.utc).isoformat())
+        payload = {
+            "symbol": sym,
+            "price": price,
+            "change_percent": pct,
+            "change": chg,
+            "timestamp": ts,
+        }
+        record_snapshot_hit("market_quote")
+        try:
+            from app.services.active_market_pool_service import record_active_pool_interaction
+
+            record_active_pool_interaction(db, sym)
+        except Exception:
+            logger.warning("active_pool record failed symbol=%s", sym, exc_info=True)
+        return {
+            "data": payload,
+            **payload,
+            "stale": False,
+            "last_updated_at": ts,
+            "data_updated_at": ts,
+            "data_source": "twelvedata",
+            "provider": "twelvedata",
+        }
+
     snap = db.get(MarketQuoteSnapshot, sym)
-    if not snap:
-        payload = {"symbol": sym, "price": None, "change_percent": None}
+    lg = load_last_good_quote(sym)
+    price = None
+    pct = None
+    chg = None
+    lu = None
+    st = True
+    if snap and snap.price is not None:
+        price = float(snap.price) if snap.price is not None else None
+        pct = float(snap.change_percent) if snap.change_percent is not None else None
+        lu = snap.last_success_at.isoformat() if snap.last_success_at else None
+        st = bool(snap.is_stale)
+    elif lg and lg.get("price") is not None:
+        price = float(lg["price"])
+        pct = float(lg["change_percent"]) if lg.get("change_percent") is not None else None
+        lu = str(lg.get("updated_at_iso") or "") or None
+        st = True
+
+    if price is None:
+        payload = {"symbol": sym, "price": None, "change_percent": None, "change": None, "timestamp": None}
         record_snapshot_hit("market_quote_empty")
         return {
             "data": payload,
             "last_updated_at": None,
             "data_updated_at": None,
-            "data_source": "stale_fallback",
+            "data_source": "fallback",
+            "provider": "snapshot",
             "stale": True,
             **payload,
         }
+
+    if pct is not None and chg is None:
+        try:
+            prev = price / (1.0 + float(pct) / 100.0) if price is not None and pct is not None else None
+            chg = round(float(price) - float(prev), 6) if prev else None
+        except Exception:
+            chg = None
+
     record_snapshot_hit("market_quote")
-    st = bool(snap.is_stale)
-    payload = {"symbol": sym, "price": snap.price, "change_percent": snap.change_percent}
-    lu = snap.last_success_at.isoformat() if snap.last_success_at else None
+    payload = {"symbol": sym, "price": price, "change_percent": pct, "change": chg, "timestamp": lu}
     return {
         "data": payload,
         **payload,
         "stale": st,
         "last_updated_at": lu,
         "data_updated_at": lu,
-        "data_source": _data_source_from_stale(st),
+        "data_source": "fallback",
+        "provider": "snapshot",
+    }
+
+
+@router.get("/search")
+def market_search(
+    q: str = Query(..., min_length=1, max_length=120),
+    asset_class: str | None = Query(None),
+    category: str | None = Query(None),
+    exchange: str | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    td_rows = twelve_search_symbol(q)
+    filtered = [r for r in td_rows if twelve_search_row_matches_filters(r, asset_class, category)]
+    if exchange:
+        exu = exchange.strip().upper()
+        filtered = [r for r in filtered if (r.get("exchange") or "").strip().upper() == exu]
+    use = filtered[:25] if filtered else []
+    rows: list[dict] = []
+    data_source = "twelvedata"
+    if use:
+        try:
+            for r in use:
+                iid = _ensure_instrument_twelve(db, r)
+                rows.append({**r, "instrument_id": iid})
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("market_search instrument upsert")
+            rows = []
+    if not rows:
+        rows = _db_instrument_search_fallback(db, q, asset_class, category, exchange, 20)
+        data_source = "fallback"
+    return {"data": rows, "data_source": data_source}
+
+
+@router.get("/time_series")
+def time_series(
+    symbol: str = Query(..., min_length=1, max_length=30),
+    interval: str | None = Query(None, max_length=16),
+    outputsize: int | None = Query(None, ge=1, le=5000),
+    period: str = Query("1M", max_length=8),
+    db: Session = Depends(get_db),
+) -> dict:
+    raw_in = symbol
+    sym = normalize_user_symbol(symbol)
+    logger.info("symbol_normalized from=%s to=%s", raw_in, sym)
+    ts_prov = route_time_series_provider(symbol)
+    logger.info("provider_route kind=time_series symbol=%s provider=%s", sym, ts_prov)
+    twelve_sym = map_symbol_for_twelve(sym) if ts_prov == "twelvedata" else None
+    p = period.upper() if period else "1M"
+    if interval and outputsize is not None:
+        iv, osz = interval.strip(), int(outputsize)
+    else:
+        iv, osz = PERIOD_TO_TWELVE.get(p, ("1day", 100))
+    raw: list[dict] = []
+    if ts_prov == "twelvedata" and twelve_sym:
+        logger.info("symbol_mapped provider=twelve from=%s to=%s", sym, twelve_sym)
+        raw = twelve_get_time_series(twelve_sym, interval=iv, outputsize=osz)
+    else:
+        logger.info("symbol_unmapped from=%s fallback=direct", sym)
+        logger.info("market_time_series symbol=%s twelve=skipped_unsupported fallback=direct", sym)
+    bars: list[dict] = []
+    data_source = "twelvedata"
+    if raw:
+        bars = [_iso_to_unix_bar(b) for b in raw if b.get("time")]
+    lu = datetime.now(timezone.utc).isoformat()
+    stale = False
+    snap = None
+    if not bars:
+        if ts_prov == "twelvedata" and twelve_sym and not raw:
+            logger.info("market_time_series symbol=%s twelve=attempted result=miss fallback=1", sym)
+        elif ts_prov == "twelvedata" and twelve_sym and raw:
+            logger.info("market_time_series symbol=%s twelve=attempted result=miss bars_empty fallback=1", sym)
+        bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+        data_source = "fallback"
+        lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else lu
+    else:
+        logger.info("market_time_series symbol=%s twelve=attempted result=hit", sym)
+        try:
+            from app.services.active_market_pool_service import record_active_pool_interaction
+
+            record_active_pool_interaction(db, sym)
+        except Exception:
+            logger.warning("active_pool record failed symbol=%s", sym, exc_info=True)
+    record_snapshot_hit("market_time_series")
+    prov = "twelvedata" if data_source == "twelvedata" else "snapshot"
+    payload = {"symbol": sym, "period": p, "provider": prov, "bars": bars}
+    return {
+        "data": payload,
+        **payload,
+        "last_updated_at": lu,
+        "data_updated_at": lu,
+        "data_source": data_source,
+        "stale": stale,
     }
 
 

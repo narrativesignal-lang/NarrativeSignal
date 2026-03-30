@@ -38,18 +38,31 @@ class InstrumentSearchHit(BaseModel):
     description: str | None = None
     country: str | None = None
     currency: str | None = None
+    # local_db: persisted instruments; external_fallback: Twelve-only (e.g. DB persist failed or incomplete)
+    data_origin: Literal["local_db", "external_fallback"] = "local_db"
+
+
+class InstrumentBindResolve(BaseModel):
+    """Identity to persist an instrument when search returned an ephemeral id (ext-pending-*)."""
+
+    symbol: str = Field(min_length=1, max_length=60)
+    asset_class: str = Field(min_length=1, max_length=40)
+    exchange: str | None = Field(default=None, max_length=60)
+    display_name: str | None = Field(default=None, max_length=120)
 
 
 class EntityCreate(BaseModel):
     portfolio_id: str
     name: str = Field(min_length=1, max_length=120)
     instrument_id: str | None = None
+    instrument_resolve: InstrumentBindResolve | None = None
     terms: list[str] = Field(default_factory=list, max_length=MAX_TERMS)
 
 
 class EntityUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     instrument_id: str | None = None
+    instrument_resolve: InstrumentBindResolve | None = None
     chart_layout: dict | None = None
 
 
@@ -103,6 +116,7 @@ class RelatedInstrumentOut(BaseModel):
 
 class AddRelatedInstrumentBody(BaseModel):
     instrument_id: str
+    instrument_resolve: InstrumentBindResolve | None = None
 
 
 class ComparisonSeriesPoint(BaseModel):
@@ -249,3 +263,20 @@ class EntityMetricSeriesOut(BaseModel):
     metric: str  # search_trend | coverage_volume | sentiment_score | momentum | acceleration
     range: str
     points: list[EntityMetricPoint]
+
+
+class EntityNewsItemOut(BaseModel):
+    title: str
+    source: str
+    published_at: str | None = None
+    url: str | None = None
+    snippet: str | None = None
+    matched_by: Literal["target", "keyword"] | None = None
+
+
+class EntityNewsOut(BaseModel):
+    mode: str
+    query: str | None = None
+    items: list[EntityNewsItemOut]
+    cached: bool = False
+    error: str | None = None  # no_keywords | fetch_failed | optional diagnostic

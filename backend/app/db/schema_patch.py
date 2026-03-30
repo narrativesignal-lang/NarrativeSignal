@@ -439,8 +439,41 @@ def ensure_macro_news_list_snapshots_table(engine) -> None:
         logger.warning("Schema patch macro_news_list_snapshots failed: %s", e)
 
 
+def ensure_active_market_pool_table(engine) -> None:
+    """Global dynamic Twelve warm pool (symbol + access timestamps; soft-disable)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS active_market_pool (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        symbol VARCHAR(40) NOT NULL,
+                        source_type VARCHAR(32) NOT NULL DEFAULT 'active_pool',
+                        last_accessed_at TIMESTAMPTZ NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        is_enabled BOOLEAN NOT NULL DEFAULT true,
+                        CONSTRAINT uq_active_market_pool_symbol UNIQUE (symbol)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_active_market_pool_enabled ON active_market_pool (is_enabled)")
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_active_market_pool_source_type ON active_market_pool (source_type)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch active_market_pool failed: %s", e)
+
+
 def run_schema_patches(engine) -> None:
     """Run all startup-safe schema patches. Call from API and worker startup."""
+    ensure_active_market_pool_table(engine)
     ensure_macro_news_list_snapshots_table(engine)
     ensure_users_paid_access_column(engine)
     ensure_users_is_admin_column(engine)

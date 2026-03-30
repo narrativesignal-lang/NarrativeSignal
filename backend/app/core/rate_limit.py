@@ -4,6 +4,8 @@ Rate limiting — Redis fixed-window INCR + EXPIRE (async).
 - Anonymous: 60 req/min by IP (`ip:*`).
 - Authenticated: 120 req/min by `user_id` only (no parallel IP bucket).
 - Stricter: `/api/macro/news` and `/api/entities*` at 30 req/min (`endpoint:*`).
+- Register / login: separate per-path Redis windows by IP (`auth:*`), do not consume the general IP bucket.
+  Register allows bursts suitable for register+immediate login; stricter in production than in dev.
 
 Redis errors → fail-open (allow). Uses redis.asyncio via get_async_redis().
 """
@@ -16,6 +18,7 @@ from typing import Any
 
 from jose import JWTError
 
+from app.core.config import settings
 from app.core.redis_async import get_async_redis
 from app.core.security import decode_token
 
@@ -25,6 +28,29 @@ RATE_LIMIT_WINDOW_SEC = 60
 RATE_LIMIT_IP_PER_MINUTE = 60
 RATE_LIMIT_USER_PER_MINUTE = 120
 RATE_LIMIT_STRICT_PER_MINUTE = 30
+AUTH_PATH_REGISTER = "/api/auth/register"
+AUTH_PATH_LOGIN = "/api/auth/login"
+# Sliding windows per path (seconds, max_requests) — only IP bucket for these paths.
+_AUTH_RELAX_ENV = frozenset({"dev", "development", "test", "local"})
+
+
+def _relaxed_auth_limits() -> bool:
+    return (getattr(settings, "env", "dev") or "dev").strip().lower() in _AUTH_RELAX_ENV
+
+
+def _auth_path_limits(path: str) -> tuple[int, int] | None:
+    """(window_sec, max_hits) for dedicated auth bucket, or None if not an auth public path."""
+    if path == AUTH_PATH_REGISTER:
+        if _relaxed_auth_limits():
+            return (60, 45)
+        return (60, 25)
+    if path == AUTH_PATH_LOGIN:
+        if _relaxed_auth_limits():
+            return (60, 90)
+        return (60, 45)
+    return None
+
+
 REDIS_KEY_NS = "rl:v2"
 # TTL > window so key survives the minute slice; Redis still expires old keys.
 REDIS_KEY_TTL_SEC = 120
@@ -88,6 +114,7 @@ async def enforce_rate_limits(
     client_ip: str,
     authorization_header: str | None,
     path: str,
+    email_hint: str | None = None,
 ) -> bool:
     """
     Returns True if allowed, False if should return 429.
@@ -105,6 +132,31 @@ async def enforce_rate_limits(
     ident = user_id or client_ip
 
     try:
+        cfg = _auth_path_limits(path)
+        if cfg is not None:
+            window_sec, max_hits = cfg
+            aw = int(time.time()) // max(1, window_sec)
+            auth_key = f"{REDIS_KEY_NS}:auth:{path}:{client_ip}:{aw}"
+            exceeded = await r.eval(
+                _LUA_INCR_CHECK,
+                1,
+                auth_key,
+                str(max_hits),
+                str(max(REDIS_KEY_TTL_SEC, window_sec * 3)),
+            )
+            if int(exceeded):
+                logger.warning(
+                    "rate_limit_reject route=%s client_ip=%s email=%s limiter_key=%s reason=auth_window_exceeded max=%s window_s=%s",
+                    path,
+                    client_ip,
+                    email_hint or "-",
+                    auth_key,
+                    max_hits,
+                    window_sec,
+                )
+                return False
+            return True
+
         if is_strict_rate_path(path):
             ep_key = f"{REDIS_KEY_NS}:endpoint:{path}:{ident}:{wid}"
             exceeded = await r.eval(

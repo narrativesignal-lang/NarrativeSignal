@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -35,14 +36,26 @@ from app.services.entity_metrics_pipeline import sync_entity_search_trend
 from app.services.market_snapshots import (
     OHLCV_CACHE_PERIODS,
     collect_symbols_for_scheduled_market_refresh,
+    upsert_ohlcv_1m_twelve_warm,
     upsert_ohlcv_from_fetch,
     upsert_quote_from_fetch,
+    upsert_quote_twelve_warm,
 )
 from app.worker.celery_app import celery_app
 from app.models.data_subscription import UserDataSubscription
 from app.services.subscriptions import ensure_subscription
 
 logger = logging.getLogger(__name__)
+
+# Limits Yahoo/Stooq burst when Celery falls back (Twelve-primary symbols skip Yahoo entirely).
+_MARKET_REFRESH_BATCH_SIZE = 3
+_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC = 2.0
+
+
+def _symbol_batches(symbols: list[str], batch_size: int = _MARKET_REFRESH_BATCH_SIZE) -> list[list[str]]:
+    if not symbols:
+        return []
+    return [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
 
 
 def _refresh_market_snapshots_sync(symbols: list[str], *, ohlcv_periods: tuple[str, ...] | None = None) -> dict:
@@ -56,12 +69,16 @@ def _refresh_market_snapshots_sync(symbols: list[str], *, ohlcv_periods: tuple[s
     periods = ohlcv_periods if ohlcv_periods is not None else OHLCV_CACHE_PERIODS
     q_ok = 0
     with SessionLocal() as db:
-        for sym in syms:
-            try:
-                upsert_quote_from_fetch(db, sym)
-                q_ok += 1
-            except Exception:
-                logger.warning("quote upsert failed in batch for %s", sym, exc_info=True)
+        batches = _symbol_batches(syms)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                try:
+                    upsert_quote_from_fetch(db, sym)
+                    q_ok += 1
+                except Exception:
+                    logger.warning("quote upsert failed in batch for %s", sym, exc_info=True)
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:
@@ -69,13 +86,17 @@ def _refresh_market_snapshots_sync(symbols: list[str], *, ohlcv_periods: tuple[s
             logger.exception("_refresh_market_snapshots_sync quote commit failed")
     cells = 0
     with SessionLocal() as db:
-        for sym in syms:
-            for period in periods:
-                try:
-                    upsert_ohlcv_from_fetch(db, sym, period)
-                    cells += 1
-                except Exception:
-                    logger.warning("ohlcv upsert failed %s period=%s", sym, period, exc_info=True)
+        batches = _symbol_batches(syms)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                for period in periods:
+                    try:
+                        upsert_ohlcv_from_fetch(db, sym, period)
+                        cells += 1
+                    except Exception:
+                        logger.warning("ohlcv upsert failed %s period=%s", sym, period, exc_info=True)
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:
@@ -470,6 +491,156 @@ def fetch_macro_news() -> dict:
     return {"inserted": inserted}
 
 
+@celery_app.task(name="app.worker.tasks.warm_pool_twelve_quotes")
+def warm_pool_twelve_quotes() -> dict:
+    """
+    Fixed Twelve warm pool: quote refresh only (twelve_get_quote + snapshot merge + Redis via client).
+    """
+    from app.services.twelve_warm_pool import TWELVE_WARM_POOL_SYMBOLS
+
+    logger.info("warm_pool started scope=quotes count=%s", len(TWELVE_WARM_POOL_SYMBOLS))
+    ok = skip = fail = 0
+    with SessionLocal() as db:
+        for sym in TWELVE_WARM_POOL_SYMBOLS:
+            try:
+                res = upsert_quote_twelve_warm(db, sym)
+            except Exception:
+                logger.warning("warm_pool fail symbol=%s part=quote", sym, exc_info=True)
+                fail += 1
+                continue
+            if res == "ok":
+                ok += 1
+                logger.info("warm_pool quote refreshed symbol=%s", sym)
+            elif res == "skip":
+                skip += 1
+                logger.info("warm_pool skip symbol=%s part=quote reason=policy", sym)
+            else:
+                fail += 1
+                logger.info("warm_pool fail symbol=%s part=quote reason=twelve_miss_or_merge", sym)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("warm_pool quotes commit failed")
+    return {"scope": "quotes", "ok": ok, "skip": skip, "fail": fail}
+
+
+@celery_app.task(name="app.worker.tasks.warm_pool_twelve_time_series_1m")
+def warm_pool_twelve_time_series_1m() -> dict:
+    """Fixed Twelve warm pool: 1M daily bars only (twelve_get_time_series + OhlcvSnapshot)."""
+    from app.services.twelve_warm_pool import TWELVE_WARM_POOL_SYMBOLS
+
+    logger.info("warm_pool started scope=time_series_1m count=%s", len(TWELVE_WARM_POOL_SYMBOLS))
+    ok = skip = fail = 0
+    with SessionLocal() as db:
+        for sym in TWELVE_WARM_POOL_SYMBOLS:
+            try:
+                res = upsert_ohlcv_1m_twelve_warm(db, sym)
+            except Exception:
+                logger.warning("warm_pool fail symbol=%s part=time_series", sym, exc_info=True)
+                fail += 1
+                continue
+            if res == "ok":
+                ok += 1
+                logger.info("warm_pool time_series refreshed symbol=%s", sym)
+            elif res == "skip":
+                skip += 1
+                logger.info("warm_pool skip symbol=%s part=time_series reason=policy", sym)
+            else:
+                fail += 1
+                logger.info("warm_pool fail symbol=%s part=time_series reason=twelve_miss_or_empty", sym)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("warm_pool time_series commit failed")
+    return {"scope": "time_series_1m", "ok": ok, "skip": skip, "fail": fail}
+
+
+@celery_app.task(name="app.worker.tasks.refresh_active_pool_twelve_quotes")
+def refresh_active_pool_twelve_quotes() -> dict:
+    """Global active pool: quote refresh every 30m (excludes fixed warm-pool symbols)."""
+    from app.services.active_market_pool_service import (
+        disable_stale_active_pool_entries,
+        list_enabled_active_pool_symbols_excluding_warm,
+    )
+
+    logger.info("active_pool refresh started scope=quotes")
+    stale_n = 0
+    with SessionLocal() as db:
+        stale_n = disable_stale_active_pool_entries(db)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("active_pool stale disable commit failed")
+
+    syms: list[str] = []
+    with SessionLocal() as db:
+        syms = list_enabled_active_pool_symbols_excluding_warm(db)
+
+    ok = skip = fail = 0
+    with SessionLocal() as db:
+        for sym in syms:
+            try:
+                res = upsert_quote_twelve_warm(db, sym)
+            except Exception:
+                logger.warning("active_pool refresh quote failed symbol=%s", sym, exc_info=True)
+                fail += 1
+                continue
+            if res == "ok":
+                ok += 1
+            elif res == "skip":
+                skip += 1
+            else:
+                fail += 1
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("active_pool quotes commit failed")
+    return {
+        "scope": "active_quotes",
+        "symbols": len(syms),
+        "stale_disabled": stale_n,
+        "ok": ok,
+        "skip": skip,
+        "fail": fail,
+    }
+
+
+@celery_app.task(name="app.worker.tasks.refresh_active_pool_twelve_time_series_1m")
+def refresh_active_pool_twelve_time_series_1m() -> dict:
+    """Global active pool: 1M Twelve time_series every 2h (excludes fixed warm-pool symbols)."""
+    from app.services.active_market_pool_service import list_enabled_active_pool_symbols_excluding_warm
+
+    logger.info("active_pool refresh started scope=time_series_1m")
+    syms: list[str] = []
+    with SessionLocal() as db:
+        syms = list_enabled_active_pool_symbols_excluding_warm(db)
+    ok = skip = fail = 0
+    with SessionLocal() as db:
+        for sym in syms:
+            try:
+                res = upsert_ohlcv_1m_twelve_warm(db, sym)
+            except Exception:
+                logger.warning("active_pool refresh time_series failed symbol=%s", sym, exc_info=True)
+                fail += 1
+                continue
+            if res == "ok":
+                ok += 1
+            elif res == "skip":
+                skip += 1
+            else:
+                fail += 1
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("active_pool time_series commit failed")
+    return {"scope": "active_time_series_1m", "symbols": len(syms), "ok": ok, "skip": skip, "fail": fail}
+
+
 @celery_app.task(name="app.worker.tasks.refresh_market_quotes")
 def refresh_market_quotes() -> dict:
     """
@@ -477,18 +648,22 @@ def refresh_market_quotes() -> dict:
     GET /market/* reads snapshots only; failures keep prior cached values inside upsert.
     """
     with SessionLocal() as db:
-        syms = collect_symbols_for_scheduled_market_refresh(db)
-        for sym in sorted(syms):
-            try:
-                upsert_quote_from_fetch(db, sym)
-            except Exception:
-                logger.warning("refresh_market_quotes failed for %s", sym, exc_info=True)
+        syms_sorted = sorted(collect_symbols_for_scheduled_market_refresh(db))
+        batches = _symbol_batches(syms_sorted)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                try:
+                    upsert_quote_from_fetch(db, sym)
+                except Exception:
+                    logger.warning("refresh_market_quotes failed for %s", sym, exc_info=True)
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:
             db.rollback()
             logger.exception("refresh_market_quotes commit failed")
-    return {"symbols_refreshed": len(syms)}
+    return {"symbols_refreshed": len(syms_sorted)}
 
 
 @celery_app.task(name="app.worker.tasks.refresh_market_ohlcv_snapshots")
@@ -497,15 +672,21 @@ def refresh_market_ohlcv_snapshots() -> dict:
     cells = 0
     failures = 0
     with SessionLocal() as db:
-        syms = collect_symbols_for_scheduled_market_refresh(db)
-        for sym in sorted(syms):
-            for period in OHLCV_CACHE_PERIODS:
-                try:
-                    upsert_ohlcv_from_fetch(db, sym, period)
-                    cells += 1
-                except Exception:
-                    failures += 1
-                    logger.warning("refresh_market_ohlcv_snapshots failed %s period=%s", sym, period, exc_info=True)
+        syms_sorted = sorted(collect_symbols_for_scheduled_market_refresh(db))
+        batches = _symbol_batches(syms_sorted)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                for period in OHLCV_CACHE_PERIODS:
+                    try:
+                        upsert_ohlcv_from_fetch(db, sym, period)
+                        cells += 1
+                    except Exception:
+                        failures += 1
+                        logger.warning(
+                            "refresh_market_ohlcv_snapshots failed %s period=%s", sym, period, exc_info=True
+                        )
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:
@@ -534,19 +715,19 @@ def warmup_core_market_snapshots() -> dict:
     Post-deploy: staggered refresh for core symbols only (quotes + 1D/1M OHLCV).
     Full OHLCV periods remain on the 6h beat to limit external burst.
     """
-    import time
-
     from app.services.market_indices_config import CORE_SHARED_MARKET_SYMBOLS_V1
 
     syms = sorted(CORE_SHARED_MARKET_SYMBOLS_V1)
     with SessionLocal() as db:
-        for i, sym in enumerate(syms):
-            try:
-                upsert_quote_from_fetch(db, sym)
-            except Exception:
-                logger.warning("warmup quote failed %s", sym, exc_info=True)
-            if i + 1 < len(syms):
-                time.sleep(0.2)
+        batches = _symbol_batches(syms)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                try:
+                    upsert_quote_from_fetch(db, sym)
+                except Exception:
+                    logger.warning("warmup quote failed %s", sym, exc_info=True)
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:
@@ -555,14 +736,16 @@ def warmup_core_market_snapshots() -> dict:
 
     lite_periods: tuple[str, ...] = ("1D", "1M")
     with SessionLocal() as db:
-        for i, sym in enumerate(syms):
-            for period in lite_periods:
-                try:
-                    upsert_ohlcv_from_fetch(db, sym, period)
-                except Exception:
-                    logger.warning("warmup ohlcv failed %s %s", sym, period, exc_info=True)
-            if i + 1 < len(syms):
-                time.sleep(0.3)
+        batches = _symbol_batches(syms)
+        for bi, batch in enumerate(batches):
+            for sym in batch:
+                for period in lite_periods:
+                    try:
+                        upsert_ohlcv_from_fetch(db, sym, period)
+                    except Exception:
+                        logger.warning("warmup ohlcv failed %s %s", sym, period, exc_info=True)
+            if bi + 1 < len(batches):
+                time.sleep(_MARKET_REFRESH_INTER_BATCH_SLEEP_SEC)
         try:
             db.commit()
         except Exception:

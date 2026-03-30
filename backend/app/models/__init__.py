@@ -1,3 +1,4 @@
+from app.models.active_market_pool import ActiveMarketPoolEntry
 from app.models.data_subscription import (
     EntityDailyMetric,
     MarketQuoteSnapshot,
@@ -28,6 +29,7 @@ from app.models.macro_index import MacroIndex
 from app.models.macro_news_list_snapshot import MacroNewsListSnapshot
 
 __all__ = [
+    "ActiveMarketPoolEntry",
     "UserDataSubscription",
     "MarketQuoteSnapshot",
     "OhlcvSnapshot",

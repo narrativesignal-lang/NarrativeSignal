@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.limits import (
     MAX_ENTITIES_PER_PORTFOLIO,
     MAX_ITEMS_PER_ENTITY,
@@ -59,6 +61,14 @@ from app.models.data_subscription import OhlcvSnapshot
 from app.models.portfolio import EntityRelatedInstrument, EntityTerm, Instrument, Portfolio, PortfolioEntity
 from app.models.user import User
 from app.services.market_snapshots import schedule_market_snapshot_refresh_for_symbols
+from app.services.instrument_search_service import (
+    filter_twelve_instrument_search_rows,
+    persist_twelve_instrument_rows,
+    twelve_row_from_bind_fields,
+    twelve_row_identity_key,
+    twelve_rows_to_ephemeral_hit_dicts,
+    upsert_instrument_from_twelve_symbol_row,
+)
 from app.services.subscriptions import (
     register_entity_subscriptions,
     register_instrument_quote_subscription,
@@ -94,6 +104,7 @@ from app.schemas.portfolios import (
     EntityOut,
     EntityTermOut,
     EntityUpdate,
+    InstrumentBindResolve,
     InstrumentSearchHit,
     PortfolioCreate,
     PortfolioOut,
@@ -112,10 +123,13 @@ from app.schemas.portfolios import (
     SearchTrendPoint,
     EntityMetricPoint,
     EntityMetricSeriesOut,
+    EntityNewsItemOut,
+    EntityNewsOut,
 )
 from app.services.entity_chart_3d import normalize_chart_3d_range
 from app.services.entity_metrics_pipeline import get_chart_3d_payload, get_entity_search_trend_timeseries
 from app.services.entity_metrics_service import get_entity_metric_timeseries
+from app.services.entity_news_service import fetch_entity_news
 from app.services.narrative_metrics import (
     entity_metric_timeseries_bundle,
     entity_quadrant_current_bundle,
@@ -136,6 +150,128 @@ _WORKSPACE_CHART_TYPES = frozenset({
 })
 
 router = APIRouter()
+
+
+def _looks_like_ephemeral_instrument_id(raw: str) -> bool:
+    return (raw or "").strip().startswith("ext-pending-")
+
+
+def _resolve_instrument_id_for_bind(
+    db: Session,
+    *,
+    instrument_id: str | None,
+    resolve: InstrumentBindResolve | None,
+    log_context: str,
+) -> uuid.UUID | None:
+    """
+    Map search selection to a persisted Instrument UUID.
+    - Valid UUID + active row → local_db_hit
+    - ext-pending-* (+ instrument_resolve) → upsert then external_fallback_resolved
+    - empty id + instrument_resolve → persist from resolve only
+    """
+    raw = (instrument_id or "").strip()
+    if not raw and resolve is not None:
+        try:
+            row = twelve_row_from_bind_fields(
+                symbol=resolve.symbol,
+                asset_class=resolve.asset_class,
+                exchange=resolve.exchange,
+                display_name=resolve.display_name,
+            )
+            inst, created = upsert_instrument_from_twelve_symbol_row(db, row, provider="external_api")
+            logger.info(
+                "bind_instrument external_fallback_resolved context=%s instrument_id=%s symbol=%s "
+                "created=%s mode=resolve_only",
+                log_context,
+                inst.id,
+                inst.symbol,
+                created,
+            )
+            return inst.id
+        except Exception as e:
+            logger.warning(
+                "bind_instrument external_fallback_persist_failed context=%s symbol=%s err=%s",
+                log_context,
+                resolve.symbol,
+                e,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save instrument. Please try again.",
+            ) from e
+
+    if not raw:
+        return None
+
+    try:
+        uid = uuid.UUID(raw)
+    except ValueError:
+        uid = None
+
+    if uid is not None:
+        inst = db.scalar(select(Instrument).where(Instrument.id == uid, Instrument.is_active.is_(True)))
+        if inst:
+            logger.info(
+                "bind_instrument local_db_hit context=%s instrument_id=%s symbol=%s",
+                log_context,
+                uid,
+                inst.symbol,
+            )
+            return uid
+        logger.warning(
+            "bind_instrument bind_failed context=%s reason=not_found instrument_id=%s",
+            log_context,
+            raw,
+        )
+        raise HTTPException(status_code=404, detail="Instrument not found")
+
+    if not _looks_like_ephemeral_instrument_id(raw):
+        logger.warning(
+            "bind_instrument bind_failed context=%s reason=invalid_instrument_id instrument_id=%s",
+            log_context,
+            raw,
+        )
+        raise HTTPException(status_code=400, detail="Invalid instrument_id")
+
+    if resolve is None:
+        logger.warning(
+            "bind_instrument bind_failed context=%s reason=missing_instrument_resolve instrument_id=%s",
+            log_context,
+            raw,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="instrument_resolve is required for this instrument selection",
+        )
+    try:
+        row = twelve_row_from_bind_fields(
+            symbol=resolve.symbol,
+            asset_class=resolve.asset_class,
+            exchange=resolve.exchange,
+            display_name=resolve.display_name,
+        )
+        inst, created = upsert_instrument_from_twelve_symbol_row(db, row, provider="external_api")
+        logger.info(
+            "bind_instrument external_fallback_resolved context=%s instrument_id=%s symbol=%s created=%s",
+            log_context,
+            inst.id,
+            inst.symbol,
+            created,
+        )
+        return inst.id
+    except Exception as e:
+        logger.warning(
+            "bind_instrument external_fallback_persist_failed context=%s symbol=%s err=%s",
+            log_context,
+            resolve.symbol,
+            e,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save instrument. Please try again.",
+        ) from e
 
 
 def _normalize_chart_layout(layout: dict) -> dict:
@@ -351,6 +487,41 @@ def get_entity(
     return EntityDetailOut(**out.model_dump(), portfolio_name=portfolio_name)
 
 
+@router.get("/entities/{entity_id}/news", response_model=EntityNewsOut)
+def get_entity_news(
+    entity_id: str,
+    mode: Literal["target", "keywords"] = Query("target"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> EntityNewsOut:
+    """Google News RSS for this entity (target = instrument/name; keywords = saved terms). Cached ~10m."""
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity)
+        .where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+        .options(selectinload(PortfolioEntity.instrument), selectinload(PortfolioEntity.terms))
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    rows, query, err, cached = fetch_entity_news(
+        entity_id=entity_id,
+        entity=entity,
+        mode=mode,
+        limit=24,
+    )
+    items = [EntityNewsItemOut(**row) for row in rows if isinstance(row, dict)]
+    logger.info(
+        "entity_news_served entity_id=%s mode=%s query=%s item_count=%s cached=%s error=%s",
+        entity_id,
+        mode,
+        (query or "")[:500],
+        len(items),
+        cached,
+        err or "-",
+    )
+    return EntityNewsOut(mode=mode, query=query, items=items, cached=cached, error=err)
+
+
 @router.post("/entities", response_model=EntityOut, status_code=status.HTTP_201_CREATED)
 def create_entity(
     payload: EntityCreate,
@@ -364,7 +535,18 @@ def create_entity(
     n = db.scalar(select(func.count()).select_from(PortfolioEntity).where(PortfolioEntity.portfolio_id == pid))
     if n and n >= MAX_ENTITIES_PER_PORTFOLIO:
         raise HTTPException(status_code=400, detail=MSG_MAX_ENTITIES)
-    inst_id = uuid.UUID(payload.instrument_id) if payload.instrument_id else None
+    inst_id: uuid.UUID | None = None
+    if payload.instrument_id is not None or payload.instrument_resolve is not None:
+        try:
+            inst_id = _resolve_instrument_id_for_bind(
+                db,
+                instrument_id=payload.instrument_id,
+                resolve=payload.instrument_resolve,
+                log_context="create_entity",
+            )
+        except HTTPException:
+            logger.warning("bind_instrument bind_failed context=create_entity (HTTP error)")
+            raise
     warm_symbol: str | None = None
     e = PortfolioEntity(user_id=current_user.id, portfolio_id=pid, name=payload.name, instrument_id=inst_id)
     db.add(e)
@@ -385,6 +567,12 @@ def create_entity(
     db.commit()
     logger.info("POST /entities committed portfolio_entity id=%s user_id=%s", e.id, current_user.id)
     db.refresh(e)
+    if inst_id:
+        logger.info(
+            "bind_instrument bind_success context=create_entity entity_id=%s instrument_id=%s",
+            e.id,
+            inst_id,
+        )
     if warm_symbol:
         schedule_market_snapshot_refresh_for_symbols([warm_symbol])
     return _entity_out(e)
@@ -404,13 +592,37 @@ def update_entity(
     warm_symbol: str | None = None
     if payload.name is not None:
         e.name = payload.name
-    if payload.instrument_id is not None:
-        e.instrument_id = uuid.UUID(payload.instrument_id) if payload.instrument_id else None
-        if e.instrument_id:
-            inst = db.get(Instrument, e.instrument_id)
-            if inst and inst.symbol:
-                register_instrument_quote_subscription(db, current_user.id, inst.symbol.strip())
-                warm_symbol = inst.symbol.strip()
+    patch = payload.model_dump(exclude_unset=True)
+    if "instrument_id" in patch or "instrument_resolve" in patch:
+        if (
+            "instrument_id" in patch
+            and patch["instrument_id"] is None
+            and not payload.instrument_resolve
+        ):
+            e.instrument_id = None
+            logger.info("bind_instrument bind_success context=update_entity action=clear entity_id=%s", eid)
+        else:
+            try:
+                resolved = _resolve_instrument_id_for_bind(
+                    db,
+                    instrument_id=payload.instrument_id,
+                    resolve=payload.instrument_resolve,
+                    log_context="update_entity",
+                )
+            except HTTPException:
+                logger.warning("bind_instrument bind_failed context=update_entity (HTTP error)")
+                raise
+            e.instrument_id = resolved
+            if e.instrument_id:
+                inst = db.get(Instrument, e.instrument_id)
+                if inst and inst.symbol:
+                    register_instrument_quote_subscription(db, current_user.id, inst.symbol.strip())
+                    warm_symbol = inst.symbol.strip()
+                logger.info(
+                    "bind_instrument bind_success context=update_entity entity_id=%s instrument_id=%s",
+                    eid,
+                    e.instrument_id,
+                )
     if payload.chart_layout is not None:
         e.chart_layout = _normalize_chart_layout(dict(payload.chart_layout))
         flag_modified(e, "chart_layout")
@@ -577,7 +789,19 @@ def add_related_instrument(
         raise HTTPException(status_code=404, detail="Entity not found")
     if len(entity.related_instruments) >= MAX_ITEMS_PER_ENTITY:
         raise HTTPException(status_code=400, detail=MSG_MAX_ITEMS_PER_ENTITY)
-    inst_id = uuid.UUID(payload.instrument_id)
+    try:
+        inst_id = _resolve_instrument_id_for_bind(
+            db,
+            instrument_id=payload.instrument_id,
+            resolve=payload.instrument_resolve,
+            log_context="add_related_instrument",
+        )
+    except HTTPException:
+        logger.warning("bind_instrument bind_failed context=add_related_instrument (HTTP error)")
+        raise
+    if inst_id is None:
+        logger.warning("bind_instrument bind_failed context=add_related_instrument reason=no_instrument_id")
+        raise HTTPException(status_code=400, detail="instrument_id required")
     inst = db.scalar(select(Instrument).where(Instrument.id == inst_id, Instrument.is_active.is_(True)))
     if not inst:
         raise HTTPException(status_code=404, detail="Instrument not found")
@@ -590,8 +814,20 @@ def add_related_instrument(
     warm_symbol = inst.symbol.strip() if inst.symbol else None
     if warm_symbol:
         register_instrument_quote_subscription(db, current_user.id, warm_symbol)
+        try:
+            from app.services.active_market_pool_service import record_active_pool_interaction
+
+            record_active_pool_interaction(db, warm_symbol)
+        except Exception:
+            logger.warning("active_pool record failed symbol=%s", warm_symbol, exc_info=True)
     db.commit()
     db.refresh(ri)
+    logger.info(
+        "bind_instrument bind_success context=add_related_instrument entity_id=%s instrument_id=%s related_row_id=%s",
+        eid,
+        inst_id,
+        ri.id,
+    )
     if warm_symbol:
         schedule_market_snapshot_refresh_for_symbols([warm_symbol])
     return RelatedInstrumentOut(
@@ -1345,13 +1581,132 @@ def search_instruments(
 
     ranked = sorted(rows, key=score, reverse=True)[:20]
 
+    def _db_identity_key(inst: Instrument) -> tuple[str, str, str]:
+        return (inst.symbol, inst.asset_class, (inst.exchange or "").strip().upper())
+
+    hits_out: list[InstrumentSearchHit] | None = None
+
+    threshold = max(1, int(getattr(settings, "instrument_search_min_local_before_external", 1) or 1))
+    if len(ranked) >= threshold:
+        logger.info(
+            "instrument_search source=local q=%r count=%d threshold=%d",
+            term[:80],
+            len(ranked),
+            threshold,
+        )
+    else:
+        logger.info(
+            "instrument_search source=local_insufficient q=%r count=%d threshold=%d — trying Twelve",
+            term[:80],
+            len(ranked),
+            threshold,
+        )
+        filtered = filter_twelve_instrument_search_rows(
+            term,
+            asset_class=asset_class,
+            category=category,
+            exchange=exchange,
+            max_rows=25,
+        )
+        n_twelve = len(filtered)
+        if n_twelve == 0:
+            logger.info(
+                "instrument_search external_fallback_empty q=%r (Twelve returned no matching rows)",
+                term[:80],
+            )
+        else:
+            ins = upd = 0
+            try:
+                ins, upd = persist_twelve_instrument_rows(db, filtered, provider="external_api")
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("instrument_search external_persist_failed q=%r", term[:80])
+                logger.info(
+                    "instrument_search external_results_returned_without_persist "
+                    "q=%r twelve_filtered=%d reason=commit_or_session_error",
+                    term[:80],
+                    n_twelve,
+                )
+                hits_out = [
+                    InstrumentSearchHit(**d)
+                    for d in twelve_rows_to_ephemeral_hit_dicts(filtered, q_norm=q_norm, limit=20)
+                ]
+            else:
+                persisted = ins + upd
+                if persisted == n_twelve and n_twelve > 0:
+                    logger.info(
+                        "instrument_search external_full_persist q=%r twelve_filtered=%d inserted=%d updated=%d",
+                        term[:80],
+                        n_twelve,
+                        ins,
+                        upd,
+                    )
+                elif 0 < persisted < n_twelve:
+                    logger.info(
+                        "instrument_search external_partial_persist "
+                        "q=%r twelve_filtered=%d persisted_rows=%d inserted=%d updated=%d",
+                        term[:80],
+                        n_twelve,
+                        persisted,
+                        ins,
+                        upd,
+                    )
+                elif n_twelve > 0 and persisted == 0:
+                    logger.info(
+                        "instrument_search external_results_returned_without_persist "
+                        "q=%r twelve_filtered=%d reason=no_rows_saved",
+                        term[:80],
+                        n_twelve,
+                    )
+
+                if hits_out is None:
+                    if persisted > 0:
+                        rows2 = db.scalars(stmt.limit(100)).all()
+                        ranked = sorted(rows2, key=score, reverse=True)[:20]
+                        db_hits = [
+                            InstrumentSearchHit(
+                                id=str(r.id),
+                                symbol=r.symbol,
+                                display_name=r.display_name,
+                                asset_class=r.asset_class,
+                                market=r.market,
+                                exchange=r.exchange,
+                                description=r.description,
+                                country=r.country,
+                                currency=r.currency,
+                                data_origin="local_db",
+                            )
+                            for r in ranked
+                        ]
+                        if 0 < persisted < n_twelve:
+                            have = {_db_identity_key(r) for r in ranked}
+                            missing = [r for r in filtered if twelve_row_identity_key(r) not in have]
+                            if missing:
+                                extra = twelve_rows_to_ephemeral_hit_dicts(
+                                    missing, q_norm=q_norm, limit=max(0, 20 - len(db_hits))
+                                )
+                                hits_out = db_hits + [InstrumentSearchHit(**d) for d in extra]
+                            else:
+                                hits_out = db_hits
+                        else:
+                            hits_out = db_hits
+                    else:
+                        hits_out = [
+                            InstrumentSearchHit(**d)
+                            for d in twelve_rows_to_ephemeral_hit_dicts(filtered, q_norm=q_norm, limit=20)
+                        ]
+
     logger.debug(
         "search_instruments q=%r asset_class=%r exchange=%r results=%d",
         q,
         asset_class,
         exchange,
-        len(ranked),
+        len(hits_out) if hits_out is not None else len(ranked),
     )
+
+    if hits_out is not None:
+        return hits_out
 
     return [
         InstrumentSearchHit(
@@ -1364,6 +1719,7 @@ def search_instruments(
             description=r.description,
             country=r.country,
             currency=r.currency,
+            data_origin="local_db",
         )
         for r in ranked
     ]

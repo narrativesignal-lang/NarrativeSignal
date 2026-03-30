@@ -13,13 +13,37 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.data_subscription import MarketQuoteSnapshot, OhlcvSnapshot, UserDataSubscription
 from app.services.cache_fallback import merge_quote_row, utcnow
-from app.services.external_api_stats import bump as bump_external
-from app.services.market.service import fetch_quote, get_ohlcv
+from app.services.market.service import fetch_quote_stooq, fetch_quote_yahoo, get_ohlcv
+from app.services.market.yahoo_guard import yahoo_provider_paused
+from app.services.market_provider_router import route_quote_provider
+from app.services.symbol_mapping import map_symbol_for_twelve, normalize_user_symbol
+from app.services.twelve_data_service import get_quote as twelve_get_quote
+from app.services.twelve_data_service import get_time_series as twelve_get_time_series
+from app.services.twelve_data_service import is_twelve_configured
+from app.services.twelve_symbol_support import is_twelve_supported_symbol
+from app.services.twelve_warm_pool import TWELVE_WARM_1M_INTERVAL
 
 logger = logging.getLogger(__name__)
 
+# Keep in sync with api/routes/market.py PERIOD_TO_TWELVE
+PERIOD_TO_TWELVE_FETCH: dict[str, tuple[str, int]] = {
+    "1D": ("1day", 14),
+    "5D": ("1day", 10),
+    "1M": ("1day", 40),
+    "6M": ("1day", 200),
+    "1Y": ("1day", 400),
+    "MAX": ("1week", 520),
+}
+
 QUOTE_LAST_GOOD_PREFIX = "market:quote:last_good:v1:"
 QUOTE_LAST_GOOD_TTL_SEC = 86400 * 14
+
+
+def _quote_row_has_usable_snapshot(snap: MarketQuoteSnapshot | None) -> bool:
+    """True if we can hold stale snapshot while Yahoo is in cooldown."""
+    if snap is None:
+        return False
+    return snap.price is not None
 
 
 def _quotes_r() -> redis.Redis:
@@ -86,28 +110,63 @@ def collect_symbols_for_scheduled_market_refresh(db: Session) -> set[str]:
     return syms
 
 
-def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
-    """Fetch one symbol; on failure or nulls, keep previous snapshot values."""
+def _bar_from_twelve_dict(bar: dict) -> dict:
+    """Twelve time_series row → OhlcvSnapshot bar shape (unix time), aligned with /market/time_series."""
+    t_iso = str(bar.get("time") or "")
+    unix = 0
+    try:
+        if t_iso.endswith("Z"):
+            dt = datetime.fromisoformat(t_iso.replace("Z", "+00:00"))
+        elif len(t_iso) == 10 and t_iso.count("-") == 2:
+            dt = datetime.fromisoformat(t_iso + "T00:00:00+00:00")
+        else:
+            dt = datetime.fromisoformat(t_iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        unix = int(dt.timestamp())
+    except Exception:
+        unix = 0
+    vol = bar.get("volume")
+    try:
+        vi = int(vol) if vol is not None and float(vol) == int(float(vol)) else round(float(vol or 0), 0)
+    except (TypeError, ValueError):
+        vi = 0
+    return {
+        "time": unix,
+        "open": round(float(bar.get("open") or 0), 4),
+        "high": round(float(bar.get("high") or 0), 4),
+        "low": round(float(bar.get("low") or 0), 4),
+        "close": round(float(bar.get("close") or 0), 4),
+        "volume": vi,
+    }
+
+
+def upsert_quote_twelve_warm(db: Session, symbol: str) -> str:
+    """
+    Warm quote: calls twelve_get_quote (fills Redis cache), merges into MarketQuoteSnapshot.
+    Returns ok | skip | fail (fail = no new price from Twelve; prior snapshot preserved).
+    """
     sym = (symbol or "").strip().upper()
     if not sym:
-        raise ValueError("symbol required")
+        return "fail"
+    if not is_twelve_supported_symbol(sym):
+        return "skip"
     snap = db.get(MarketQuoteSnapshot, sym)
     attempt = utcnow()
     err: str | None = None
     new_p: float | None = None
     new_c: float | None = None
     try:
-        q = fetch_quote(sym)
-        bump_external("yahoo_quote", 1)
-        new_p = q.get("price")
-        new_c = q.get("change_percent")
-        if new_p is not None:
-            new_p = round(float(new_p), 2)
-        if new_c is not None:
-            new_c = round(float(new_c), 2)
+        td = twelve_get_quote(sym)
+        if td and td.get("price") is not None:
+            new_p = round(float(td["price"]), 2)
+            pct = td.get("percent_change")
+            new_c = round(float(pct), 2) if pct is not None else None
+        else:
+            err = "twelve_miss"
     except Exception as e:
         err = str(e)[:2000]
-        logger.warning("fetch_quote failed %s: %s", sym, err)
+        logger.warning("upsert_quote_twelve_warm fetch failed %s: %s", sym, err)
 
     prev_p = snap.price if snap else None
     prev_c = snap.change_percent if snap else None
@@ -129,6 +188,208 @@ def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
         snap.is_stale = bool(prev_p is not None and new_p is None)
         if snap.last_success_at is None and merged_p is None:
             snap.last_error = err or "no price"
+
+    if merged_p is not None:
+        try:
+            ts = (snap.last_success_at or attempt).isoformat()
+            cache_last_good_quote(sym, float(merged_p), merged_c, updated_at_iso=ts)
+        except Exception:
+            logger.debug("cache_last_good_quote after twelve warm failed", exc_info=True)
+
+    return "ok" if new_p is not None and err is None else "fail"
+
+
+def upsert_ohlcv_1m_twelve_warm(db: Session, symbol: str) -> str:
+    """
+    Warm 1M OHLCV via Twelve time_series (fills Redis), merges into OhlcvSnapshot for period 1M.
+    Same interval/outputsize as API route PERIOD_TO_TWELVE['1M'].
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return "fail"
+    if not is_twelve_supported_symbol(sym):
+        return "skip"
+    p = "1M"
+    key = f"{sym}:{p}"
+    iv, osz = TWELVE_WARM_1M_INTERVAL
+    snap = db.get(OhlcvSnapshot, key)
+    attempt = utcnow()
+    err: str | None = None
+    bars_list: list[dict] = []
+    try:
+        raw = twelve_get_time_series(sym, interval=iv, outputsize=osz)
+        if raw:
+            bars_list = [_bar_from_twelve_dict(b) for b in raw if b.get("time")]
+        if not bars_list:
+            err = "twelve_miss"
+    except Exception as e:
+        err = str(e)[:2000]
+        logger.warning("upsert_ohlcv_1m_twelve_warm failed %s: %s", sym, err)
+
+    if snap is None:
+        snap = OhlcvSnapshot(snapshot_key=key, symbol=sym, period=p)
+        db.add(snap)
+
+    snap.last_attempt_at = attempt
+    if bars_list and err is None:
+        snap.bars = {"bars": bars_list}
+        snap.last_success_at = attempt
+        snap.last_error = None
+        snap.is_stale = False
+    else:
+        snap.last_error = err or (snap.last_error if snap.last_error else None)
+        prev_bars = ((snap.bars or {}).get("bars", []) if snap.bars else [])
+        snap.is_stale = bool(prev_bars and not bars_list)
+        if snap.last_success_at is None and not bars_list:
+            snap.last_error = err or "no bars"
+
+    return "ok" if bars_list and err is None else "fail"
+
+
+def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
+    """
+    Refresh quote: Twelve → Stooq → Yahoo (last). On failure, keep merged DB values (merge_quote_row).
+    When Yahoo is in rate-limit cooldown and a DB snapshot exists, Yahoo is not called.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise ValueError("symbol required")
+    sym_norm = normalize_user_symbol(sym)
+    snap = db.get(MarketQuoteSnapshot, sym)
+    attempt = utcnow()
+    err: str | None = None
+    new_p: float | None = None
+    new_c: float | None = None
+    provider_selected = "none"
+    twelve_live = False
+    stooq_live = False
+    yahoo_skipped_cooldown = False
+    twelve_routable = (
+        is_twelve_configured()
+        and route_quote_provider(sym_norm) == "twelvedata"
+        and map_symbol_for_twelve(sym_norm) is not None
+    )
+
+    if twelve_routable:
+        td_sym = map_symbol_for_twelve(sym_norm)
+        if td_sym:
+            try:
+                td = twelve_get_quote(td_sym)
+                if td and td.get("price") is not None:
+                    new_p = round(float(td["price"]), 2)
+                    pct = td.get("percent_change")
+                    new_c = round(float(pct), 2) if pct is not None else None
+                    twelve_live = True
+                    provider_selected = "twelve"
+                else:
+                    err = "twelve_miss"
+                    logger.warning(
+                        "market_pipeline quote symbol=%s stage=twelve_no_price fallback=stooq_yahoo",
+                        sym_norm,
+                    )
+            except Exception as e:
+                err = str(e)[:2000]
+                logger.warning(
+                    "market_pipeline quote symbol=%s stage=twelve_exception err=%s fallback=stooq_yahoo",
+                    sym_norm,
+                    err,
+                )
+
+    if not twelve_live:
+        try:
+            sq = fetch_quote_stooq(sym_norm)
+            if sq.get("price") is not None:
+                new_p = round(float(sq["price"]), 2)
+                pct = sq.get("change_percent")
+                new_c = round(float(pct), 2) if pct is not None else None
+                stooq_live = True
+                provider_selected = "stooq_fallback"
+                err = None
+        except Exception as e:
+            err = str(e)[:2000]
+            logger.warning("market_pipeline quote symbol=%s stage=stooq_exception err=%s", sym_norm, err)
+
+    if not twelve_live and not stooq_live:
+        if yahoo_provider_paused() and _quote_row_has_usable_snapshot(snap):
+            yahoo_skipped_cooldown = True
+            provider_selected = "yahoo_skipped_cooldown"
+            err = None
+            logger.info(
+                "market_pipeline quote symbol=%s yahoo_skipped_due_to_cooldown "
+                "provider_selected=yahoo_skipped_cooldown data_lineage=db_last_good reason=paused_and_has_snapshot",
+                sym_norm,
+            )
+        else:
+            try:
+                q = fetch_quote_yahoo(sym_norm)
+                yahoo_used = bool(q.get("_yahoo_used"))
+                new_p = q.get("price")
+                new_c = q.get("change_percent")
+                if new_p is not None:
+                    new_p = round(float(new_p), 2)
+                if new_c is not None:
+                    new_c = round(float(new_c), 2)
+                if new_p is not None:
+                    provider_selected = "yahoo_fallback"
+                    err = None
+                else:
+                    provider_selected = "yahoo_fallback" if yahoo_used else "none"
+                    err = err or "yahoo_empty_or_paused"
+            except Exception as e:
+                err = str(e)[:2000]
+                provider_selected = "yahoo_fallback"
+                logger.warning("market_pipeline quote symbol=%s stage=yahoo_exception err=%s", sym_norm, err)
+
+    prev_p = snap.price if snap else None
+    prev_c = snap.change_percent if snap else None
+    merged_p, merged_c = merge_quote_row(prev_p, prev_c, new_p, new_c)
+    preserved_db_only = bool(prev_p is not None and new_p is None and merged_p == prev_p)
+
+    if snap is None:
+        snap = MarketQuoteSnapshot(symbol=sym)
+        db.add(snap)
+
+    snap.price = merged_p
+    snap.change_percent = merged_c
+    snap.last_attempt_at = attempt
+    live_ok = new_p is not None and err is None
+    if live_ok:
+        snap.last_success_at = attempt
+        snap.last_error = None
+        snap.is_stale = False
+    else:
+        snap.last_error = err or (snap.last_error if snap.last_error else None)
+        snap.is_stale = bool(prev_p is not None and new_p is None)
+        if snap.last_success_at is None and merged_p is None:
+            snap.last_error = err or "no price"
+
+    if twelve_live:
+        data_lineage = "twelve"
+    elif stooq_live:
+        data_lineage = "stooq_fallback"
+    elif new_p is not None:
+        data_lineage = "yahoo_fallback"
+    elif yahoo_skipped_cooldown or preserved_db_only:
+        data_lineage = "db_last_good"
+    else:
+        data_lineage = "none"
+    freshness = "stale" if snap.is_stale else "fresh"
+
+    logger.info(
+        "market_pipeline quote symbol=%s provider_selected=%s twelve_live=%s stooq_live=%s "
+        "fallback_used=%s live_fetch_ok=%s snapshot_fallback_merge=%s yahoo_skipped_due_to_cooldown=%s "
+        "data_lineage=%s freshness=%s",
+        sym_norm,
+        provider_selected,
+        twelve_live,
+        stooq_live,
+        bool(twelve_routable and not twelve_live),
+        new_p is not None,
+        preserved_db_only,
+        yahoo_skipped_cooldown,
+        data_lineage,
+        freshness,
+    )
 
     if merged_p is not None:
         try:
@@ -159,13 +420,13 @@ def _bar_to_dict(bar) -> dict:
 
 def upsert_ohlcv_from_fetch(db: Session, symbol: str, period: str = "1M") -> OhlcvSnapshot | None:
     """
-    Fetch OHLCV from Stooq, upsert for the given period. On success returns the snapshot.
-    Fetches once per symbol; writes snapshot for the requested period. Does not overwrite existing
-    successful data on fetch failure.
+    OHLCV: Twelve time_series first when routable; else Stooq then Yahoo (see market.service.get_ohlcv).
+    Preserves prior bars on failed refresh (stale flag).
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         raise ValueError("symbol required")
+    sym_norm = normalize_user_symbol(sym)
     p = (period or "1M").upper()
     if p not in OHLCV_CACHE_PERIODS:
         p = "1M"
@@ -174,30 +435,101 @@ def upsert_ohlcv_from_fetch(db: Session, symbol: str, period: str = "1M") -> Ohl
     attempt = utcnow()
     err: str | None = None
     bars_list: list[dict] = []
-    try:
-        raw_bars = get_ohlcv(symbol=sym, period=p)
-        bump_external("market_ohlcv", 1)
-        bars_list = [_bar_to_dict(b) for b in raw_bars]
-    except Exception as e:
-        err = str(e)[:2000]
-        logger.warning("get_ohlcv failed %s:%s: %s", sym, p, err)
+    provider_selected = "none"
+    twelve_live = False
+    twelve_routable = (
+        is_twelve_configured()
+        and route_quote_provider(sym_norm) == "twelvedata"
+        and map_symbol_for_twelve(sym_norm) is not None
+    )
+
+    if twelve_routable and p in PERIOD_TO_TWELVE_FETCH:
+        td_sym = map_symbol_for_twelve(sym_norm)
+        iv, osz = PERIOD_TO_TWELVE_FETCH[p]
+        if td_sym:
+            try:
+                raw = twelve_get_time_series(td_sym, interval=iv, outputsize=osz)
+                if raw:
+                    bars_list = [_bar_from_twelve_dict(b) for b in raw if b.get("time")]
+                if bars_list:
+                    twelve_live = True
+                    provider_selected = "twelve"
+                else:
+                    err = "twelve_miss"
+                    logger.warning(
+                        "market_pipeline ohlcv symbol=%s period=%s stage=twelve_empty fallback=stooq_yahoo",
+                        sym_norm,
+                        p,
+                    )
+            except Exception as e:
+                err = str(e)[:2000]
+                logger.warning(
+                    "market_pipeline ohlcv symbol=%s period=%s stage=twelve_exception err=%s fallback=stooq_yahoo",
+                    sym_norm,
+                    p,
+                    err,
+                )
+
+    if not twelve_live:
+        try:
+            raw_bars, ohlcv_src = get_ohlcv(symbol=sym_norm, period=p)
+            bars_list = [_bar_to_dict(b) for b in raw_bars]
+            if bars_list:
+                provider_selected = ohlcv_src if ohlcv_src in ("stooq_fallback", "yahoo_fallback") else "fallback"
+                err = None
+            else:
+                provider_selected = ohlcv_src or "none"
+                err = err or "no_bars_all_providers"
+        except Exception as e:
+            err = str(e)[:2000]
+            logger.warning("market_pipeline ohlcv symbol=%s period=%s stage=fallback_exception err=%s", sym_norm, p, err)
+            provider_selected = "yahoo_fallback"
+
+    prev_bars = ((snap.bars or {}).get("bars", []) if snap and snap.bars else [])
+    preserved_db_only = bool(prev_bars and not bars_list)
 
     if snap is None:
         snap = OhlcvSnapshot(snapshot_key=key, symbol=sym, period=p)
         db.add(snap)
 
     snap.last_attempt_at = attempt
-    if bars_list and err is None:
+    live_ok = bool(bars_list) and err is None
+    if live_ok:
         snap.bars = {"bars": bars_list}
         snap.last_success_at = attempt
         snap.last_error = None
         snap.is_stale = False
     else:
         snap.last_error = err or (snap.last_error if snap.last_error else None)
-        prev_bars = ((snap.bars or {}).get("bars", []) if snap.bars else [])
         snap.is_stale = bool(prev_bars and not bars_list)
         if snap.last_success_at is None and not bars_list:
             snap.last_error = err or "no bars"
+
+    if twelve_live:
+        data_lineage = "twelve"
+    elif bars_list and provider_selected == "yahoo_fallback":
+        data_lineage = "yahoo_fallback"
+    elif bars_list and provider_selected == "stooq_fallback":
+        data_lineage = "stooq_fallback"
+    elif preserved_db_only:
+        data_lineage = "db_last_good"
+    else:
+        data_lineage = "none"
+    freshness = "stale" if snap.is_stale else "fresh"
+
+    logger.info(
+        "market_pipeline ohlcv symbol=%s period=%s provider_selected=%s twelve_live=%s fallback_used=%s "
+        "bars_ok=%s snapshot_fallback_merge=%s data_lineage=%s freshness=%s",
+        sym_norm,
+        p,
+        provider_selected,
+        twelve_live,
+        bool(twelve_routable and not twelve_live),
+        bool(bars_list),
+        preserved_db_only,
+        data_lineage,
+        freshness,
+    )
 
     return snap
 

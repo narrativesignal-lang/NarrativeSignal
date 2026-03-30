@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     admin_usernames: str = ""
     admin_emails: str = ""
 
+    # Twelve Data (optional): market search / quote / time_series
+    twelve_api_key: str | None = None
+
+    # Portfolio GET /instruments/search: call Twelve only when local row count is below this (default: empty DB only)
+    instrument_search_min_local_before_external: int = 1
+
+    # Yahoo/yfinance fallback pacing (worker + snapshot refresh). Cooldown floor is 600s in code.
+    yahoo_fallback_min_interval_seconds: float = 1.25
+    yahoo_rate_limit_cooldown_seconds: int = 600
+
 
 settings = Settings()
 

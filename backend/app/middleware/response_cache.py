@@ -36,6 +36,7 @@ SKIP_PATH_PREFIXES: tuple[str, ...] = (
 # Per-user CRUD reads must not be served from Redis after POST/PATCH/DELETE; cache invalidation is not wired.
 BYPASS_CACHE_PATH_PREFIXES: tuple[str, ...] = (
     "/api/auth/",
+    "/api/market",
     "/api/portfolios",
     "/api/entities/",
     "/api/research/folders",
