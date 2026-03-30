@@ -2,10 +2,14 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Shell } from "@/components/Shell";
+import { SlowLoadBanner, useSlowLoadVisible } from "@/components/SlowLoadBanner";
 import { api, instrumentSearchNeedsResolve, parseApiError, toInstrumentBindResolve } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { useUser } from "@/lib/UserContext";
+import { STALE_MARKET_MS } from "@/lib/queryClient";
 import { CandleChart } from "@/components/CandleChart";
 import { normalizeOhlcvBars, type CandleBar } from "@/lib/ohlcvBars";
 import {
@@ -96,15 +100,15 @@ const COMPARE_SECTION_MAX_HEIGHT = 1100;
 
 export default function EntityDetailPageClient({ entityId }: { entityId: string }) {
   const { t } = useI18n();
+  const { user: authUser, loading: userLoading } = useUser();
+  const isAdminUser = Boolean(authUser?.is_admin);
   const id = entityId;
   const [entity, setEntity] = useState<EntityDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [terms, setTerms] = useState<string[]>([]);
   const [termInput, setTermInput] = useState("");
   const [period, setPeriod] = useState<(typeof PERIODS)[number]>("1M");
-  const [ohlcv, setOhlcv] = useState<{ symbol: string; period: string; bars: any[] } | null>(null);
-  const [ohlcvLoading, setOhlcvLoading] = useState(false);
-  const [ohlcvLoaded, setOhlcvLoaded] = useState(false);
+  const [newsPending, setNewsPending] = useState(false);
   const [workspaceCharts, setWorkspaceCharts] = useState<WorkspaceChartBlock[]>([]);
   const [workspaceBlockHeights, setWorkspaceBlockHeights] = useState<Record<string, number>>({});
   const [addChartModalOpen, setAddChartModalOpen] = useState(false);
@@ -124,6 +128,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [comparisonInstrumentIds, setComparisonInstrumentIds] = useState<string[]>([]);
   const [comparisonCandles, setComparisonCandles] = useState<Array<{ symbol: string; bars: CandleBar[] }>>([]);
   const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [compareAllowFetch, setCompareAllowFetch] = useState(false);
   const [removeItemConfirm, setRemoveItemConfirm] = useState<{
     relatedId: string;
     instrumentId: string;
@@ -158,6 +163,34 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   } | null>(null);
 
   const ENTITY_LOAD_TIMEOUT_MS = 15000;
+
+  const ohlcvQuery = useQuery({
+    queryKey: ["market", "timeseries", entity?.instrument?.symbol ?? "", period],
+    queryFn: async () => {
+      const sym = entity!.instrument!.symbol;
+      const res = await api.marketTimeSeries(sym, period);
+      return {
+        symbol: res.symbol,
+        period: res.period,
+        bars: normalizeOhlcvBars(res.bars || []),
+      };
+    },
+    enabled: Boolean(entity?.instrument?.symbol),
+    staleTime: STALE_MARKET_MS,
+    placeholderData: (previousData) => previousData,
+  });
+  const ohlcv = ohlcvQuery.data ?? null;
+  const ohlcvLoading = ohlcvQuery.isPending && !ohlcvQuery.data;
+  const ohlcvLoaded = !entity?.instrument?.symbol || ohlcvQuery.isFetched;
+
+  const entityShellLoading = !entity && !error;
+  const pageSlowPending =
+    entityShellLoading ||
+    (!!entity &&
+      (newsPending ||
+        (!!entity.instrument?.symbol && ohlcvQuery.isPending && !ohlcvQuery.data) ||
+        (compareAllowFetch && comparisonLoading)));
+  const showPageSlowBanner = useSlowLoadVisible(pageSlowPending);
 
   const recalcNewsHeight = useCallback(() => {
     const col = leftColRef.current;
@@ -223,6 +256,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     layoutRestoredRef.current = false;
     skipNextChartPersistRef.current = true;
     setTrendingData(null);
+    setComparisonCandles([]);
+    setComparisonLoading(false);
 
     let cancelled = false;
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -279,31 +314,6 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   }, [id, entity?.id, workspaceCharts, workspaceBlockHeights, narrativeFlowPeriod]);
 
   useEffect(() => {
-    if (!entity?.instrument?.symbol) {
-      setOhlcv(null);
-      setOhlcvLoading(false);
-      setOhlcvLoaded(false);
-      return;
-    }
-    setOhlcvLoading(true);
-    setOhlcvLoaded(false);
-    api
-      .marketTimeSeries(entity.instrument.symbol, period)
-      .then((res) =>
-        setOhlcv({
-          symbol: res.symbol,
-          period: res.period,
-          bars: normalizeOhlcvBars(res.bars || []),
-        })
-      )
-      .catch(() => setOhlcv(null))
-      .finally(() => {
-        setOhlcvLoading(false);
-        setOhlcvLoaded(true);
-      });
-  }, [entity?.instrument?.symbol, period]);
-
-  useEffect(() => {
     setMainChartVisibleRange(null);
   }, [period, entity?.instrument?.symbol]);
 
@@ -324,6 +334,32 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   useEffect(() => {
     loadRelatedInstruments();
   }, [loadRelatedInstruments]);
+
+  useEffect(() => {
+    if (!entity?.id) {
+      setCompareAllowFetch(false);
+      return;
+    }
+    setCompareAllowFetch(false);
+    let cancelled = false;
+    const handle = () => {
+      if (!cancelled) setCompareAllowFetch(true);
+    };
+    let idleId = 0;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(handle, { timeout: 2000 });
+    } else {
+      timeoutId = setTimeout(handle, 600);
+    }
+    return () => {
+      cancelled = true;
+      if (typeof window !== "undefined" && "cancelIdleCallback" in window && idleId) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
+  }, [entity?.id]);
 
   useEffect(() => {
     if (entity?.instrument?.id && comparisonInstrumentIds.length === 0) {
@@ -539,8 +575,9 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   }, [comparisonInstrumentIds, comparisonPeriod, allComparisonOptions]);
 
   useEffect(() => {
+    if (!compareAllowFetch) return;
     void loadComparisonOhlcv();
-  }, [comparisonInstrumentIds.join(","), comparisonPeriod, loadComparisonOhlcv]);
+  }, [compareAllowFetch, comparisonInstrumentIds.join(","), comparisonPeriod, loadComparisonOhlcv]);
 
   /** Grow compare panel height with 1→3 symbols; cap at three row-heights so a 4th uses the scrollbar. */
   useEffect(() => {
@@ -656,25 +693,10 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     );
   }
 
-  if (!entity) {
-    return (
-      <Shell>
-        <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 px-4 text-center">
-          <div className="text-sm font-medium text-slate-300">{t("entity.loadingEntity")}</div>
-          <div className="max-w-sm text-xs text-slate-500">If this hangs, check that the API is running and you are logged in.</div>
-        </div>
-      </Shell>
-    );
-  }
-
-  const assetType = entity.instrument?.asset_class ?? "—";
-  const instrumentLine = entity.instrument
-    ? `${entity.instrument.symbol}${entity.instrument.display_name ? ` · ${entity.instrument.display_name}` : ""}`
-    : "—";
-
   return (
     <Shell>
       <div className="space-y-6">
+        <SlowLoadBanner visible={showPageSlowBanner} />
         <div className="flex items-center gap-2 text-sm text-slate-400">
           <Link href="/dashboard?tab=entity" className="hover:text-slate-200">
             {t("nav.dashboard")}
@@ -684,68 +706,97 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
             {t("dashboard.entityData")}
           </Link>
           <span>/</span>
-          <span className="text-slate-200">{entity.name}</span>
+          <span className="text-slate-200">{entity?.name ?? t("entity.loadingEntity")}</span>
         </div>
 
         {/* Header */}
         <header className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
-          <h1 className="text-lg font-semibold text-slate-100">{entity.name}</h1>
-          <div className="mt-2 grid gap-1 text-sm text-slate-400 sm:grid-cols-2">
-            <div><span className="text-slate-500">{t("entity.portfolio")}:</span> {entity.portfolio_name}</div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-slate-500">{t("entity.instrument")}:</span>
-              {entity.instrument ? (
-                <>
-                  <span className="text-slate-200">{instrumentLine}</span>
-                  <span className="text-slate-500">·</span>
-                  <button
-                    type="button"
-                    onClick={() => { setBindInstrumentQuery(""); setBindInstrumentResults([]); setBindInstrumentOpen(true); }}
-                    className="text-xs text-indigo-300 hover:text-indigo-200"
-                  >
-                    {t("entity.changeInstrument")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleClearInstrument}
-                    className="text-xs text-slate-500 hover:text-red-300"
-                  >
-                    {t("entity.clearInstrument")}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="text-slate-500">{t("entity.noInstrumentBound")}</span>
-                  <button
-                    type="button"
-                    onClick={() => { setBindInstrumentQuery(""); setBindInstrumentResults([]); setBindInstrumentOpen(true); }}
-                    className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500"
-                  >
-                    {t("entity.bindInstrument")}
-                  </button>
-                </>
-              )}
-            </div>
-            <div><span className="text-slate-500">{t("entity.assetType")}:</span> {assetType}</div>
-            {trendingData ? (
-              <div className="mt-2 flex items-center gap-2 rounded border border-slate-700 bg-slate-800/40 px-3 py-1.5">
-                <span className="text-xs text-slate-500">{t("entity.trend")}:</span>
-                <span
-                  className={`text-sm font-medium ${
-                    trendingData.trend_label === "Rising"
-                      ? "text-emerald-400"
-                      : trendingData.trend_label === "Fading"
-                        ? "text-amber-400"
-                        : trendingData.trend_label === "Spike"
-                          ? "text-indigo-400"
-                          : "text-slate-400"
-                  }`}
-                >
-                  {trendingData.trend_label}
-                </span>
+          {!entity ? (
+            <div className="animate-pulse space-y-3" aria-hidden>
+              <div className="h-6 w-56 max-w-full rounded-md bg-slate-800/90" />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="h-4 max-w-xs rounded bg-slate-800/70" />
+                <div className="h-4 max-w-xs rounded bg-slate-800/70" />
+                <div className="h-4 max-w-xs rounded bg-slate-800/50" />
               </div>
-            ) : null}
-          </div>
+            </div>
+          ) : (
+            <>
+              <h1 className="text-lg font-semibold text-slate-100">{entity.name}</h1>
+              <div className="mt-2 grid gap-1 text-sm text-slate-400 sm:grid-cols-2">
+                <div>
+                  <span className="text-slate-500">{t("entity.portfolio")}:</span> {entity.portfolio_name}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-500">{t("entity.instrument")}:</span>
+                  {entity.instrument ? (
+                    <>
+                      <span className="text-slate-200">
+                        {entity.instrument.symbol}
+                        {entity.instrument.display_name ? ` · ${entity.instrument.display_name}` : ""}
+                      </span>
+                      <span className="text-slate-500">·</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBindInstrumentQuery("");
+                          setBindInstrumentResults([]);
+                          setBindInstrumentOpen(true);
+                        }}
+                        className="text-xs text-indigo-300 hover:text-indigo-200"
+                      >
+                        {t("entity.changeInstrument")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearInstrument}
+                        className="text-xs text-slate-500 hover:text-red-300"
+                      >
+                        {t("entity.clearInstrument")}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-slate-500">{t("entity.noInstrumentBound")}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBindInstrumentQuery("");
+                          setBindInstrumentResults([]);
+                          setBindInstrumentOpen(true);
+                        }}
+                        className="rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+                      >
+                        {t("entity.bindInstrument")}
+                      </button>
+                    </>
+                  )}
+                </div>
+                <div>
+                  <span className="text-slate-500">{t("entity.assetType")}:</span>{" "}
+                  {entity.instrument?.asset_class ?? "—"}
+                </div>
+                {trendingData ? (
+                  <div className="mt-2 flex items-center gap-2 rounded border border-slate-700 bg-slate-800/40 px-3 py-1.5">
+                    <span className="text-xs text-slate-500">{t("entity.trend")}:</span>
+                    <span
+                      className={`text-sm font-medium ${
+                        trendingData.trend_label === "Rising"
+                          ? "text-emerald-400"
+                          : trendingData.trend_label === "Fading"
+                            ? "text-amber-400"
+                            : trendingData.trend_label === "Spike"
+                              ? "text-indigo-400"
+                              : "text-slate-400"
+                      }`}
+                    >
+                      {trendingData.trend_label}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
         </header>
 
         {error ? (
@@ -756,6 +807,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
 
         <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,400px)] lg:items-start">
         <div ref={leftColRef} className="min-w-0 space-y-6">
+        {entity ? (
+          <>
         {/* Terms */}
         <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
           <div className="flex items-center justify-between">
@@ -764,13 +817,17 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               <SectionHelp titleKey="help.entityTermsTitle" bodyKey="help.entityTermsBody" />
             </div>
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => { setAiOpen(true); setAiIdea(""); }}
-                className="text-xs text-indigo-300 hover:text-indigo-200"
-              >
-                {t("entity.aiSuggestion")}
-              </button>
+              {userLoading ? null : isAdminUser ? (
+                <button
+                  type="button"
+                  onClick={() => { setAiOpen(true); setAiIdea(""); }}
+                  className="text-xs text-indigo-300 hover:text-indigo-200"
+                >
+                  {t("entity.aiSuggestion")}
+                </button>
+              ) : (
+                <span className="text-xs text-slate-500">{t("entity.aiAdminOnlyShort")}</span>
+              )}
               <button
                 type="button"
                 onClick={saveTerms}
@@ -1032,16 +1089,43 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
             </ResizableChartSection>
           </div>
         </section>
+          </>
+        ) : (
+          <>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+              <div className="h-4 w-28 animate-pulse rounded bg-slate-800" />
+              <div className="mt-3 h-24 animate-pulse rounded bg-slate-950/60" />
+            </section>
+            <section ref={priceSectionRef} className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+              <div className="h-4 w-24 animate-pulse rounded bg-slate-800" />
+              <div className="mt-3 min-h-[200px] animate-pulse rounded-lg bg-slate-950/50" />
+            </section>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+              <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+              <div className="mt-3 h-20 animate-pulse rounded bg-slate-950/50" />
+            </section>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+              <div className="h-4 w-36 animate-pulse rounded bg-slate-800" />
+              <div className="mt-3 min-h-[160px] animate-pulse rounded-lg bg-slate-950/50" />
+            </section>
+          </>
+        )}
         </div>
 
         <aside className="min-w-0 space-y-3 lg:sticky lg:top-4 lg:self-start">
           <EntityNewsPanel
             entityId={id}
             heightPx={newsPanelHeight}
-            instrument={entity.instrument ? { symbol: entity.instrument.symbol, display_name: entity.instrument.display_name ?? null } : null}
-            entityName={entity.name ?? ""}
+            instrument={
+              entity?.instrument
+                ? { symbol: entity.instrument.symbol, display_name: entity.instrument.display_name ?? null }
+                : null
+            }
+            entityName={entity?.name ?? "\u00A0"}
             terms={terms}
+            onPendingChange={setNewsPending}
           />
+          {entity ? (
           <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
@@ -1123,6 +1207,12 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               )}
             </div>
           </section>
+          ) : (
+            <section className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
+              <div className="h-4 w-44 animate-pulse rounded bg-slate-800" />
+              <div className="mt-3 h-32 animate-pulse rounded-lg bg-slate-950/50" />
+            </section>
+          )}
         </aside>
         </div>
 
@@ -1136,7 +1226,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         />
 
         {/* AI Suggestion modal */}
-        {aiOpen ? (
+        {aiOpen && isAdminUser ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
             <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-xl">
               <h3 className="text-lg font-semibold text-slate-100">{t("entity.aiKeywordSuggestion")}</h3>
@@ -1242,7 +1332,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         ) : null}
 
         {/* Bind / change primary instrument modal */}
-        {bindInstrumentOpen ? (
+        {bindInstrumentOpen && entity ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="bind-instrument-title">
             <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-xl">
               <h3 id="bind-instrument-title" className="text-lg font-semibold text-slate-100">

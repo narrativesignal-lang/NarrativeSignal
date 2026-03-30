@@ -16,7 +16,11 @@ import { Top5Trending } from "./Top5Trending";
 
 const NEWS_PRELOAD_LIMIT = 40;
 
-export function MacroLayout() {
+type MacroLayoutProps = {
+  isActive?: boolean;
+};
+
+export function MacroLayout({ isActive = true }: MacroLayoutProps) {
   const queryClient = useQueryClient();
   const [selectedCategory, setSelectedCategory] = useState<MacroCategorySlug | null>("general");
   const [heatmapFilter, setHeatmapFilter] = useState<string | null>(null);
@@ -26,6 +30,7 @@ export function MacroLayout() {
   }, [selectedCategory]);
 
   useEffect(() => {
+    if (!isActive) return;
     for (const slug of MACRO_CATEGORY_SLUGS) {
       void queryClient.prefetchQuery({
         queryKey: ["macro", "news", slug, NEWS_PRELOAD_LIMIT],
@@ -45,7 +50,7 @@ export function MacroLayout() {
         staleTime: STALE_MARKET_MS
       });
     }
-  }, [queryClient]);
+  }, [queryClient, isActive]);
 
   const heatmapCells = useMemo(() => {
     if (!selectedCategory) return null;

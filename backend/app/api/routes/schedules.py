@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, user_is_admin
+from app.api.deps import get_current_user
+from app.core.ai_access import AI_FEATURES_FORBIDDEN_DETAIL, AI_SCHEDULE_TYPES
+from app.core.feature_access import can_access_feature, feature_key_for_schedule_type
 from app.core.limits import (
     MAX_ACTIVE_SCHEDULES,
     MAX_SAVED_SCHEDULES,
@@ -120,10 +122,10 @@ def create_schedule(
     schedule_type = (payload.schedule_type or "standard_monitor").strip()
     if schedule_type not in SCHEDULE_TYPES:
         schedule_type = "standard_monitor"
-    # Premium/coming-up types only for admin
-    PREMIUM_SCHEDULE_TYPES = ("ai_alert", "ai_report", "general_alert")
-    if schedule_type in PREMIUM_SCHEDULE_TYPES and not user_is_admin(current_user):
-        schedule_type = "standard_monitor"
+    if schedule_type in AI_SCHEDULE_TYPES and not can_access_feature(
+        current_user, feature_key_for_schedule_type(schedule_type)
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=AI_FEATURES_FORBIDDEN_DETAIL)
     model = (payload.model or "").strip() or None
     if model and model not in MODEL_OPTIONS:
         model = None

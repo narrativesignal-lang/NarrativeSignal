@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 import urllib.request
 
 import feedparser
@@ -112,6 +112,42 @@ def _google_news_rss_for_query(q: str) -> str:
 _GOOGLE_NEWS_HOST = "news.google.com"
 
 
+_HUB_SINGLE_SEGMENTS = frozenset(
+  {
+    "us",
+    "en",
+    "opinion",
+    "world",
+    "markets",
+    "politics",
+    "business",
+    "tech",
+    "economy",
+    "finance",
+    "news",
+    "home",
+    "intl",
+  }
+)
+
+
+def _is_likely_homepage_url(url: str | None) -> bool:
+  """True if URL looks like site root or a top nav section, not a specific article."""
+  if not url or not str(url).strip():
+    return True
+  try:
+    p = urlparse(str(url).strip())
+    path = (p.path or "").rstrip("/")
+    if path == "":
+      return True
+    segments = [s for s in path.split("/") if s]
+    if len(segments) == 1 and segments[0].lower() in _HUB_SINGLE_SEGMENTS:
+      return True
+    return False
+  except Exception:
+    return False
+
+
 def _feed_source_title(feed: Any) -> str | None:
   ft = getattr(feed, "title", None) if feed is not None else None
   return str(ft).strip() if ft else None
@@ -150,17 +186,17 @@ def _first_non_google_href(entry: Any) -> str | None:
 
 
 def _resolve_publisher_and_url(entry: Any, raw_title: str, feed_title: str | None) -> tuple[str, str | None]:
-  """Publisher for display; URL preferring original article over Google redirect."""
+  """Publisher for display; URL preferring a real article path over publisher homepages."""
   src = _entry_source_block(entry)
   pub = None
-  original: str | None = None
+  from_source_href: str | None = None
   if src:
     st = src.get("title") if isinstance(src, dict) else None
     if st:
       pub = str(st).strip()
     ho = src.get("href") if isinstance(src, dict) else getattr(src, "href", None)
     if ho and _GOOGLE_NEWS_HOST not in str(ho):
-      original = str(ho).strip()
+      from_source_href = str(ho).strip()
 
   if not pub:
     pub = _publisher_from_entry_title(raw_title)
@@ -172,12 +208,16 @@ def _resolve_publisher_and_url(entry: Any, raw_title: str, feed_title: str | Non
   link = getattr(entry, "link", None)
   link_s = str(link).strip() if link else None
 
-  if not original:
-    original = _first_non_google_href(entry)
-  if not original and link_s and _GOOGLE_NEWS_HOST not in link_s:
+  # Prefer non-Google article links from <entry>; then non-home direct URLs; then Google redirect.
+  original = _first_non_google_href(entry)
+  if not original and from_source_href and not _is_likely_homepage_url(from_source_href):
+    original = from_source_href
+  if not original and link_s and _GOOGLE_NEWS_HOST not in link_s and not _is_likely_homepage_url(link_s):
     original = link_s
-  if not original:
+  if not original and link_s:
     original = link_s
+  if not original and from_source_href:
+    original = from_source_href
 
   return pub, original
 
@@ -190,20 +230,33 @@ def _clean_display_title(raw_title: str, publisher: str) -> str:
 
 
 def _plain_summary(raw: str | None, title: str, max_len: int = 220) -> str | None:
-  """Strip HTML, collapse whitespace, cap length; fallback to truncated title."""
+  """Strip HTML, collapse whitespace, cap length. Omit when text is only duplicating the headline."""
   def clip(s: str) -> str:
     s = s.strip()
     if len(s) <= max_len:
       return s
     return s[: max_len - 1] + "…"
 
+  def _too_close_to_title(body: str, headline: str) -> bool:
+    b = re.sub(r"\s+", " ", body.strip().lower())
+    h = re.sub(r"\s+", " ", headline.strip().lower())
+    if not b or not h:
+      return False
+    if b == h:
+      return True
+    if b.startswith(h) and len(b) <= len(h) + 20:
+      return True
+    if h.startswith(b) and len(b) < 40:
+      return True
+    return False
+
   if raw:
     text = unescape(re.sub(r"<[^>]+>", " ", raw))
     text = re.sub(r"\s+", " ", text).strip()
-    if text:
+    if text and not _too_close_to_title(text, title):
       return clip(text)
 
-  return clip(title) if title.strip() else None
+  return None
 
 
 def _feeds_for(category: str, subcategory: str | None) -> list[tuple[str, str]]:

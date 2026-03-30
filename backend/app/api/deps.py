@@ -7,7 +7,10 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
 
+from app.core.ai_access import AI_FEATURES_FORBIDDEN_DETAIL
 from app.core.config import settings
+from app.core.feature_access import FeatureKey, can_access_feature
+from app.core.user_admin import user_is_admin
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.user import User
@@ -69,33 +72,23 @@ def get_current_user_optional(
     return user
 
 
-def _admin_allowlist_sets() -> tuple[set[str], set[str]]:
-    names = {x.strip().lower() for x in (settings.admin_usernames or "").split(",") if x.strip()}
-    emails = {x.strip().lower() for x in (settings.admin_emails or "").split(",") if x.strip()}
-    return names, emails
-
-
-def user_is_admin(user: User) -> bool:
-    """
-    Admin flag for admin-only HTTP APIs and /auth/me.is_admin.
-    Uses users.is_admin; optional ADMIN_USERNAMES / ADMIN_EMAILS env narrows who counts as admin.
-    """
-    if not getattr(user, "is_admin", False):
-        return False
-    name_set, email_set = _admin_allowlist_sets()
-    if not name_set and not email_set:
-        return True
-    uname = (getattr(user, "username", None) or "").strip().lower()
-    email = (getattr(user, "email", None) or "").strip().lower()
-    if name_set and email_set:
-        return uname in name_set or email in email_set
-    if name_set:
-        return uname in name_set
-    return email in email_set
-
-
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if not user_is_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user
+
+
+def require_feature(feature_name: str):
+    """Dependency factory: 403 with ``AI_FEATURES_FORBIDDEN_DETAIL`` if ``can_access_feature`` fails."""
+
+    def _dep(current_user: User = Depends(get_current_user)) -> User:
+        if not can_access_feature(current_user, feature_name):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=AI_FEATURES_FORBIDDEN_DETAIL)
+        return current_user
+
+    return _dep
+
+
+# Backward-compatible alias: HEAVY AI document-style entitlement (same 403 message).
+require_paid_ai_access = require_feature(FeatureKey.DOCUMENT_LLM_ANALYSIS)
 

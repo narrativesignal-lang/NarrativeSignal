@@ -14,8 +14,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.ai_access import AI_RUN_SKIP_REASON_CODE
+from app.core.feature_access import FeatureKey, can_access_feature
 from app.models.monitoring import TriggeredAlert
 from app.models.report import Report
+from app.models.user import User
 
 
 def run_ai_alert_pipeline(
@@ -33,6 +36,17 @@ def run_ai_alert_pipeline(
     Simplified AI Alert: heuristic scoring, placeholder for LLM steps.
     Returns {alerts_triggered, report_created}.
     """
+    actor = db.get(User, user_id)
+    alert_feature = (
+        FeatureKey.SCHEDULE_GENERAL_ALERT if schedule_type == "general_alert" else FeatureKey.SCHEDULE_AI_ALERT
+    )
+    if not actor or not can_access_feature(actor, alert_feature):
+        return {
+            "alerts_triggered": 0,
+            "skipped": True,
+            "reason": AI_RUN_SKIP_REASON_CODE,
+        }
+
     now = datetime.now(timezone.utc)
     window_end = now
     window_start = now - timedelta(hours=24)
@@ -75,6 +89,14 @@ def run_ai_report_pipeline(
     """
     AI Report: always generate a report (no threshold). Same heuristic placeholder.
     """
+    actor = db.get(User, user_id)
+    if not actor or not can_access_feature(actor, FeatureKey.SCHEDULE_AI_REPORT):
+        return {
+            "report_created": 0,
+            "skipped": True,
+            "reason": AI_RUN_SKIP_REASON_CODE,
+        }
+
     now = datetime.now(timezone.utc)
     window_end = now
     window_start = now - timedelta(hours=24)

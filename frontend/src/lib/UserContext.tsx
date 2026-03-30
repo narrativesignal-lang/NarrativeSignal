@@ -11,6 +11,8 @@ export type MeUser = {
   email: string;
   profile_name: string;
   credits_balance: number;
+  plan_code?: string;
+  ai_access_level?: string;
   paid_access: boolean;
   is_admin: boolean;
 };

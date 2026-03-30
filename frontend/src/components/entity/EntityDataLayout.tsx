@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { EntityConceptGuideModal } from "@/components/entity/EntityConceptGuideModal";
+import { SlowLoadBanner, useSlowLoadVisible } from "@/components/SlowLoadBanner";
 import { SectionHelp } from "@/components/SectionHelp";
 import { api, instrumentSearchNeedsResolve, parseApiError, toInstrumentBindResolve } from "@/lib/api";
 import type { FeatureGuideLocale } from "@/content/featureGuide";
 import { featureGuideContent } from "@/content/featureGuide";
 import { useI18n } from "@/lib/i18n";
+import { useUser } from "@/lib/UserContext";
 import type { Locale } from "@/lib/i18n";
 import { INSTRUMENT_CATEGORIES } from "@/lib/instrumentCategories";
 import { FREE_PLAN_LIMITS } from "@/lib/limits";
@@ -23,8 +25,15 @@ type Entity = Awaited<ReturnType<typeof api.listEntities>>[number];
 type InstrumentHit = NonNullable<Entity["instrument"]>;
 type SearchInstrumentHit = InstrumentHit & { exchange?: string | null; country?: string | null };
 
-export function EntityDataLayout() {
+type EntityDataLayoutProps = {
+  /** When false, data effects are paused so a hidden tab does not refetch. */
+  isActive?: boolean;
+};
+
+export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
   const { t, locale } = useI18n();
+  const { user: authUser, loading: userLoading } = useUser();
+  const isAdminUser = Boolean(authUser?.is_admin);
   const [conceptGuideOpen, setConceptGuideOpen] = useState(false);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [selectedPortfolio, setSelectedPortfolio] = useState<Portfolio | null>(null);
@@ -45,32 +54,46 @@ export function EntityDataLayout() {
   const [newPortfolioName, setNewPortfolioName] = useState("");
   const [portfolioBusy, setPortfolioBusy] = useState(false);
   const [portfolioSuccess, setPortfolioSuccess] = useState<string | null>(null);
+  const [portfolioFetchPending, setPortfolioFetchPending] = useState(false);
+  const [entitiesFetchPending, setEntitiesFetchPending] = useState(false);
+
+  const dashSlowVisible = useSlowLoadVisible(
+    isActive && (portfolioFetchPending || entitiesFetchPending)
+  );
 
   const loadPortfolios = useCallback(async () => {
+    setPortfolioFetchPending(true);
     try {
       const list = await api.listPortfolios();
       setPortfolios(list);
-      if (!selectedPortfolio && list[0]) setSelectedPortfolio(list[0]);
+      setSelectedPortfolio((sp) => (!sp && list[0] ? list[0] : sp));
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setPortfolioFetchPending(false);
     }
-  }, [selectedPortfolio]);
+  }, []);
 
   useEffect(() => {
-    loadPortfolios();
-  }, [loadPortfolios]);
+    if (!isActive) return;
+    void loadPortfolios();
+  }, [isActive, loadPortfolios]);
 
   useEffect(() => {
+    if (!isActive) return;
     if (!selectedPortfolio) {
       setEntities([]);
+      setEntitiesFetchPending(false);
       return;
     }
+    setEntitiesFetchPending(true);
     setError(null);
     api
       .listEntities(selectedPortfolio.id)
       .then(setEntities)
-      .catch((e: unknown) => setError(parseApiError(e)));
-  }, [selectedPortfolio?.id]);
+      .catch((e: unknown) => setError(parseApiError(e)))
+      .finally(() => setEntitiesFetchPending(false));
+  }, [isActive, selectedPortfolio?.id]);
 
   useEffect(() => {
     if (!instrumentQuery.trim()) {
@@ -210,6 +233,7 @@ export function EntityDataLayout() {
 
   return (
     <div className="min-w-0 space-y-4">
+      {isActive ? <SlowLoadBanner visible={dashSlowVisible} /> : null}
       {error ? (
         <div className="rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">{error}</div>
       ) : null}
@@ -436,9 +460,15 @@ export function EntityDataLayout() {
                 <div>
                   <div className="flex items-center justify-between">
                     <label className="block text-xs font-medium text-slate-400">{t("entity.terms")}</label>
-                    <button type="button" onClick={() => { setAiOpen(true); setAiKeywords([]); setAiIdea(""); }} className="text-xs text-indigo-300 hover:text-indigo-200">
-                      {t("entity.aiSuggestion")}
-                    </button>
+                    {userLoading ? (
+                      <span className="text-xs text-slate-600"> </span>
+                    ) : isAdminUser ? (
+                      <button type="button" onClick={() => { setAiOpen(true); setAiKeywords([]); setAiIdea(""); }} className="text-xs text-indigo-300 hover:text-indigo-200">
+                        {t("entity.aiSuggestion")}
+                      </button>
+                    ) : (
+                      <span className="text-xs text-slate-500">{t("entity.aiAdminOnlyShort")}</span>
+                    )}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1.5 rounded border border-slate-700 bg-slate-950 p-2">
                     {terms.map((term) => (
@@ -465,7 +495,7 @@ export function EntityDataLayout() {
           </div>
         ) : null}
 
-        {aiOpen ? (
+        {aiOpen && isAdminUser ? (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
             <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-xl">
               <h3 className="text-lg font-semibold text-slate-100">{t("entity.aiKeywordSuggestion")}</h3>

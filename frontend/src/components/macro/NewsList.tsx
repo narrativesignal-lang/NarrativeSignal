@@ -7,6 +7,7 @@ import { api, parseApiError } from "@/lib/api";
 import type { MacroCategorySlug } from "@/lib/macroCategories";
 import { STALE_MACRO_NEWS_MS } from "@/lib/queryClient";
 import { mockNewsForCategory, type NewsItem } from "@/lib/macroMockData";
+import { SlowLoadBanner, useSlowLoadVisible } from "@/components/SlowLoadBanner";
 import { writeMacroNewsArticleToSession } from "@/lib/macroNewsDetailCache";
 import { cleanMacroNewsTitle, htmlToPlainText } from "@/lib/plainText";
 
@@ -98,6 +99,35 @@ function sentimentClass(sentiment: string | null): string {
   return "bg-slate-800 text-slate-400 border-slate-700";
 }
 
+function isWeakSummary(summaryPlain: string, titleDisplay: string, source: string): boolean {
+  const s = summaryPlain.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!s) return true;
+  const t = titleDisplay.replace(/\s+/g, " ").trim().toLowerCase();
+  const src = source.replace(/\s+/g, " ").trim().toLowerCase();
+  if (s === t) return true;
+  if (s === `${t} ${src}`.trim()) return true;
+  if (s.startsWith(t) && s.length <= t.length + src.length + 8) return true;
+  if (t.length >= 12 && s.startsWith(t.slice(0, 12)) && s.length < t.length + 25) return true;
+  return false;
+}
+
+function isLikelyHomepageArticleUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, "");
+    if (!path || path === "") return true;
+    const parts = path.split("/").filter(Boolean);
+    const hub = new Set([
+      "us", "en", "opinion", "world", "markets", "politics", "business", "tech",
+      "economy", "finance", "news", "home", "intl",
+    ]);
+    if (parts.length === 1 && hub.has(parts[0].toLowerCase())) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function NewsListItem({ item, categorySlug }: { item: NewsItem; categorySlug: MacroCategorySlug }) {
   const [open, setOpen] = useState(false);
   const ts = item.timestamp ? new Date(item.timestamp).toLocaleString() : "—";
@@ -110,7 +140,10 @@ function NewsListItem({ item, categorySlug }: { item: NewsItem; categorySlug: Ma
         ? `${dupCount} outlets merged for this story`
         : "";
   const titleDisplay = cleanMacroNewsTitle(item.title);
-  const summaryPlain = item.summary ? htmlToPlainText(item.summary, 12000) : "";
+  const summaryRaw = item.summary ? htmlToPlainText(item.summary, 12000) : "";
+  const summaryPlain = isWeakSummary(summaryRaw, titleDisplay, item.source) ? "" : summaryRaw;
+  const externalHref =
+    item.url && !isLikelyHomepageArticleUrl(item.url) ? item.url.trim() : null;
   const detailHref = `/news/${encodeURIComponent(item.id)}?source=macro_news&category=${encodeURIComponent(
     categorySlug
   )}${item.subcategory ? `&subcategory=${encodeURIComponent(item.subcategory)}` : ""}`;
@@ -189,7 +222,11 @@ function NewsListItem({ item, categorySlug }: { item: NewsItem; categorySlug: Ma
                 {summaryPlain ? (
                   <p className="text-sm leading-relaxed text-slate-300">{summaryPlain}</p>
                 ) : (
-                  <p className="text-sm text-slate-500">No summary for this item yet.</p>
+                  <p className="text-sm text-slate-500">
+                    {summaryRaw
+                      ? "No separate preview is available for this headline. Open the article below for full text."
+                      : "No summary for this item yet."}
+                  </p>
                 )}
                 <Link
                   href={detailHref}
@@ -217,18 +254,22 @@ function NewsListItem({ item, categorySlug }: { item: NewsItem; categorySlug: Ma
         <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
           Impact {item.impact != null ? `${item.impact}/10` : "—"}
         </span>
-        {item.url ? (
+        {externalHref ? (
           <a
-            href={item.url}
+            href={externalHref}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center rounded bg-indigo-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-500"
-            title="Opens the publisher site in a new tab"
+            title="Opens the article on the publisher site in a new tab"
           >
             Open Original Source
           </a>
         ) : (
-          <span className="text-[11px] text-slate-500">Original URL unavailable.</span>
+          <span className="text-[11px] text-slate-500">
+            {item.url
+              ? "Publisher link looks like a section home — use “Open article page in app” or search the headline on the source site."
+              : "Original URL unavailable."}
+          </span>
         )}
       </div>
     </div>
@@ -273,7 +314,9 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
   }, [rawItems, subcategoryFilter]);
 
   const loading = Boolean(categorySlug) && q.isPending && rawItems.length === 0;
+  const slowLoadPending = Boolean(categorySlug) && q.isPending;
   const error = q.isError ? parseApiError(q.error) : null;
+  const showSlowHint = useSlowLoadVisible(slowLoadPending);
 
   if (!categorySlug) {
     return (
@@ -297,6 +340,9 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-2 shrink-0">
+        <SlowLoadBanner visible={showSlowHint} />
+      </div>
       <div className="mb-2 flex shrink-0 items-center justify-between">
         <div className="text-sm font-semibold text-slate-300">News list</div>
         {subcategoryFilter ? (

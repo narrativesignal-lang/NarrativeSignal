@@ -136,9 +136,9 @@ function cronStepAppearsSubHourly(expr: string): boolean {
 }
 
 export default function SchedulesPage() {
-  const { user } = useUser();
+  const { user, loading: userLoading } = useUser();
   const { t } = useI18n();
-  const isAdmin = user?.is_admin ?? false;
+  const isAdmin = Boolean(user?.is_admin);
 
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -213,6 +213,13 @@ export default function SchedulesPage() {
   }, [scheduleType, bucketMinutes]);
 
   useEffect(() => {
+    if (userLoading) return;
+    if (!isAdmin && ["ai_alert", "ai_report", "general_alert"].includes(scheduleType)) {
+      setScheduleType("standard_monitor");
+    }
+  }, [userLoading, isAdmin, scheduleType]);
+
+  useEffect(() => {
     if (scheduleType === "high_alert" && !highAlertExplained.current) {
       highAlertExplained.current = true;
       setHighAlertOpen(true);
@@ -259,7 +266,7 @@ export default function SchedulesPage() {
         entity_ids,
         bucket_minutes: bucketMinutes,
         is_active: true,
-        schedule_type: isAdmin ? scheduleType : "standard_monitor",
+        schedule_type: scheduleType,
         label: label.trim() || undefined,
         model: model.trim() || undefined,
         impact_threshold: typeof impactThreshold === "number" ? impactThreshold : undefined,
@@ -382,23 +389,27 @@ export default function SchedulesPage() {
                 >
                   <option value="standard_monitor">{t("schedules.standardOption")}</option>
                   <option value="high_alert">{t("schedules.highAlertOption")} ({t("schedules.highAlertComingSoon")})</option>
-                  <option value="ai_alert">{t("schedules.aiAlertOption")}</option>
-                  <option value="ai_report">{t("schedules.aiReportOption")}</option>
-                  <option value="general_alert">{t("schedules.generalAlertOption")}</option>
+                  {!userLoading && isAdmin ? (
+                    <>
+                      <option value="ai_alert">{t("schedules.aiAlertOption")}</option>
+                      <option value="ai_report">{t("schedules.aiReportOption")}</option>
+                      <option value="general_alert">{t("schedules.generalAlertOption")}</option>
+                    </>
+                  ) : null}
                 </select>
               </label>
-              {isComingUp(scheduleType) && !isAdmin && (
+              {isComingUp(scheduleType) && !userLoading && !isAdmin && (
                 <div className="rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
                   {t("schedules.plannedNotAvailable")}
                   <span className="ml-1 text-amber-300/80">{t("schedules.premiumPlanned")}</span>
                 </div>
               )}
-              {isComingUp(scheduleType) && isAdmin && (
+              {isComingUp(scheduleType) && !userLoading && isAdmin && (
                 <div className="rounded border border-indigo-900/50 bg-indigo-950/20 px-3 py-2 text-xs text-indigo-200">
                   {t("schedules.adminBypass")}
                 </div>
               )}
-              {isComingUp(scheduleType) && isAdmin && (
+              {isComingUp(scheduleType) && !userLoading && isAdmin && (
                 <>
                   <label className="block">
                     <div className="flex items-center gap-1 text-xs text-slate-400">{t("schedules.labelOptional")}</div>

@@ -5,8 +5,9 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user
+from app.api.deps import require_feature
 from app.core.config import settings
+from app.core.feature_access import FeatureKey
 from app.models.user import User
 from app.schemas.portfolios import KeywordSuggestionRequest, KeywordSuggestionResponse
 
@@ -17,7 +18,7 @@ MAX_KW = 15
 @router.post("/keyword-suggestions", response_model=KeywordSuggestionResponse)
 def keyword_suggestions(
     payload: KeywordSuggestionRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FeatureKey.KEYWORD_SUGGESTIONS)),
 ) -> KeywordSuggestionResponse:
     if not settings.gemini_api_key:
         raise HTTPException(status_code=503, detail="Gemini API key not configured")

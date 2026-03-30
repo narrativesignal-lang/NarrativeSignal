@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.core.plan_entitlements import AiAccessLevel, PlanCode
+
 
 class RegisterRequest(BaseModel):
     """Regular sign-up: real email + password. Internal username is assigned server-side."""
@@ -26,6 +28,14 @@ class MeResponse(BaseModel):
     email: str  # str not EmailStr: admin@internal.test etc. may fail strict validation
     profile_name: str = ""
     credits_balance: int
+    plan_code: str = Field(
+        default=PlanCode.FREE.value,
+        description="Canonical plan slug; see PlanCode in app.core.plan_entitlements.",
+    )
+    ai_access_level: str = Field(
+        default=AiAccessLevel.NONE.value,
+        description="Canonical AI band; see AiAccessLevel in app.core.plan_entitlements.",
+    )
     paid_access: bool = False
     is_admin: bool = False
 

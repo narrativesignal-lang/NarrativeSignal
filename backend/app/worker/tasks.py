@@ -12,12 +12,19 @@ from app.core.platform_tz import now_platform
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
+from app.core.ai_access import (
+    AI_BACKGROUND_SKIP_DETAIL,
+    AI_RUN_SKIP_REASON_CODE,
+    AI_SCHEDULE_TYPES,
+)
+from app.core.feature_access import can_access_feature, feature_key_for_schedule_type
 from app.db.session import SessionLocal
 from app.models.index_point import IndexPoint
 from app.models.keyword_group import KeywordGroup
 from app.models.macro_event import MacroEvent
 from app.models.monitoring import MonitoringRun, MonitoringSchedule
 from app.models.portfolio import PortfolioEntity
+from app.models.user import User
 from app.models.report import Report
 from app.services.analysis import (
     analyze_documents_for_group,
@@ -185,6 +192,16 @@ def trigger_monitoring_run(*, user_id: str, schedule_id: str | None = None) -> d
                 bucket_minutes = 60
                 stype = "standard_monitor"
 
+            owner = db.get(User, uid)
+            if stype in AI_SCHEDULE_TYPES:
+                if not owner or not can_access_feature(owner, feature_key_for_schedule_type(stype)):
+                    run.status = "success"
+                    run.finished_at = now_platform()
+                    run.detail = AI_BACKGROUND_SKIP_DETAIL
+                    db.add(run)
+                    db.commit()
+                    return {"run_id": str(run.id), "skipped": True, "reason": AI_RUN_SKIP_REASON_CODE}
+
             # AI Alert / AI Report / General Alert: use simplified pipeline
             if stype in ("ai_alert", "ai_report", "general_alert"):
                 from app.services.ai_alert import run_ai_alert_pipeline, run_ai_report_pipeline
@@ -301,7 +318,9 @@ def trigger_monitoring_run(*, user_id: str, schedule_id: str | None = None) -> d
                 ingested_links += lc
 
                 # AI analyze newly linked docs (pluggable provider; heuristic fallback)
-                analyzed += analyze_documents(db=db, group_id=gid, document_ids=newly_linked)
+                analyzed += analyze_documents(
+                    db=db, group_id=gid, document_ids=newly_linked, acting_user_id=uid
+                )
 
                 metrics, top_docs = analyze_documents_for_group(
                     db=db,

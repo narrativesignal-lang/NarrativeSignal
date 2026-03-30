@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.api.deps import get_current_user, user_is_admin
+from app.core.plan_entitlements import AiAccessLevel, PlanCode
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -42,6 +43,9 @@ def _me_response(user: User) -> MeResponse:
         email=user.email,
         profile_name=(getattr(user, "profile_name", None) or "") or "",
         credits_balance=user.credits_balance,
+        plan_code=(getattr(user, "plan_code", None) or PlanCode.FREE.value) or PlanCode.FREE.value,
+        ai_access_level=(getattr(user, "ai_access_level", None) or AiAccessLevel.NONE.value)
+        or AiAccessLevel.NONE.value,
         paid_access=getattr(user, "paid_access", False),
         is_admin=user_is_admin(user),
     )

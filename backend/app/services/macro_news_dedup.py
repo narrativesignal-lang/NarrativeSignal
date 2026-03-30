@@ -106,6 +106,12 @@ def _related_publishers_others(members: list["MacroNewsItem"], representative: "
   return out[:_RELATED_PUBLISHERS_CAP]
 
 
+def _summary_score(s: str | None) -> int:
+  if not s or not str(s).strip():
+    return 0
+  return len(str(s).strip())
+
+
 def _better_representative(a: "MacroNewsItem", b: "MacroNewsItem") -> "MacroNewsItem":
   """Pick the single best item when merging a duplicate cluster."""
   imp_a = a.impact if a.impact is not None else float("-inf")
@@ -117,6 +123,9 @@ def _better_representative(a: "MacroNewsItem", b: "MacroNewsItem") -> "MacroNews
   qa, qb = _url_quality(a.url), _url_quality(b.url)
   if qa != qb:
     return a if qa > qb else b
+  sa, sb = _summary_score(a.summary), _summary_score(b.summary)
+  if sa != sb:
+    return a if sa > sb else b
   ta, tb = ensure_utc(a.timestamp), ensure_utc(b.timestamp)
   return a if ta >= tb else b
 

@@ -107,6 +107,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.customStart": "Start",
     "timeline.customEnd": "End",
     "timeline.customRangeInvalid": "Choose a valid start and end for the custom range.",
+    "timeline.aiAdminOnlyNote": "AI summary is admin-only for now.",
     "timeline.closePanel": "Close",
     "help.researchMainTitle": "Cross Comparison",
     "help.researchMainBody":
@@ -437,6 +438,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.customStart": "开始",
     "timeline.customEnd": "结束",
     "timeline.customRangeInvalid": "请填写有效的自定义起止时间。",
+    "timeline.aiAdminOnlyNote": "AI 摘要暂仅限管理员使用。",
     "timeline.closePanel": "关闭",
     "help.researchMainTitle": "交叉对比",
     "help.researchMainBody": "选择项目，按标签配置研究范围，再添加图表块；布局随项目保存。",
@@ -1043,6 +1045,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.customStart": "Início",
     "timeline.customEnd": "Fim",
     "timeline.customRangeInvalid": "Indique início e fim válidos para o intervalo personalizado.",
+    "timeline.aiAdminOnlyNote": "O resumo por IA está disponível apenas para admin, por agora.",
     "timeline.closePanel": "Fechar",
     "help.researchMainTitle": "Comparação cruzada",
     "help.researchMainBody":

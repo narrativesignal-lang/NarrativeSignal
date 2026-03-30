@@ -33,11 +33,18 @@ export function DashboardClient() {
   );
   const [macroGuideOpen, setMacroGuideOpen] = useState(false);
   const [entityGuideOpen, setEntityGuideOpen] = useState(false);
+  const [macroMounted, setMacroMounted] = useState(activeTab === "macro");
+  const [entityMounted, setEntityMounted] = useState(activeTab === "entity");
 
   useEffect(() => {
     if (tabParam === "entity") setActiveTab("entity");
     else if (tabParam === "macro") setActiveTab("macro");
   }, [tabParam]);
+
+  useEffect(() => {
+    if (activeTab === "macro") setMacroMounted(true);
+    if (activeTab === "entity") setEntityMounted(true);
+  }, [activeTab]);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selected, setSelected] = useState<Group | null>(null);
@@ -242,11 +249,22 @@ export function DashboardClient() {
           )}
         </div>
 
-        {activeTab === "macro" ? (
-          <MacroLayout />
-        ) : (
-          <EntityDataLayout />
-        )}
+        {macroMounted ? (
+          <div
+            className={activeTab === "macro" ? "block min-w-0" : "hidden"}
+            aria-hidden={activeTab !== "macro"}
+          >
+            <MacroLayout isActive={activeTab === "macro"} />
+          </div>
+        ) : null}
+        {entityMounted ? (
+          <div
+            className={activeTab === "entity" ? "block min-w-0" : "hidden"}
+            aria-hidden={activeTab !== "entity"}
+          >
+            <EntityDataLayout isActive={activeTab === "entity"} />
+          </div>
+        ) : null}
       </div>
       {macroGuideOpen && (
         <MacroFeatureGuideModal onClose={() => setMacroGuideOpen(false)} locale={locale} />

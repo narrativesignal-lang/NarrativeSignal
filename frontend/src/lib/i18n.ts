@@ -93,6 +93,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "common.search": "Search",
     "common.noResults": "No results",
     "common.noData": "No data",
+    "common.slowInitialLoad":
+      "Initial load may be slower. Cached data and previously loaded pages will usually open faster.",
     // Research
     "research.title": "Cross Comparison",
     "research.subtitle": "Compare charts and indicators. Create folders and projects.",
@@ -245,6 +247,7 @@ const translations: Record<Locale, Record<string, string>> = {
     // Entity detail
     "entity.terms": "Terms",
     "entity.aiSuggestion": "AI Suggestion",
+    "entity.aiAdminOnlyShort": "Admin only for now",
     "entity.saveTerms": "Save terms",
     "entity.addTermPlaceholder": "Add term, press Enter",
     "entity.price": "Price",
@@ -412,6 +415,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "common.search": "搜索",
     "common.noResults": "无结果",
     "common.noData": "暂无数据",
+    "common.slowInitialLoad": "首次加载可能较慢。已缓存的数据和曾打开过的页面通常会更快。",
     "research.title": "交叉对比",
     "research.subtitle": "对比图表与指标。创建文件夹和项目。",
     "research.universe": "研究范围",
@@ -554,6 +558,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "macro.selectCategory": "请选择类别",
     "entity.terms": "词条",
     "entity.aiSuggestion": "AI 推荐",
+    "entity.aiAdminOnlyShort": "暂仅限管理员",
     "entity.saveTerms": "保存词条",
     "entity.addTermPlaceholder": "添加词条，按回车",
     "entity.price": "价格",
@@ -719,6 +724,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "common.search": "Buscar",
     "common.noResults": "Sin resultados",
     "common.noData": "Sin datos",
+    "common.slowInitialLoad":
+      "La primera carga puede ser más lenta. Los datos en caché y las páginas ya visitadas suelen abrirse más rápido.",
     "research.title": "Comparación cruzada",
     "research.subtitle": "Compara gráficos e indicadores. Crea carpetas y proyectos.",
     "research.universe": "Universo de investigación",
@@ -862,6 +869,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "macro.selectCategory": "Selecciona una categoría",
     "entity.terms": "Términos",
     "entity.aiSuggestion": "Sugerencia IA",
+    "entity.aiAdminOnlyShort": "Solo administración por ahora",
     "entity.saveTerms": "Guardar términos",
     "entity.addTermPlaceholder": "Añadir término, Enter",
     "entity.price": "Precio",
@@ -998,6 +1006,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "common.loading": "Carregando…",
     "common.redirecting": "Redirecionando…",
     "common.noData": "Sem dados",
+    "common.slowInitialLoad":
+      "A primeira carga pode ser mais lenta. Dados em cache e páginas já abertas costumam abrir mais depressa.",
     "entity.chartLoadFailed": "Falha ao carregar dados do gráfico.",
     "entity.stackedCandlesNoData": "Sem dados OHLCV para os símbolos selecionados neste período.",
     "entity.confirmClearInstrument": "Limpar o instrumento principal? Os gráficos de preço ficarão vazios até vincular outro.",
@@ -1009,6 +1019,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "entity.price": "Preço",
     "entity.saveTerms": "Guardar termos",
     "entity.aiSuggestion": "Sugestão IA",
+    "entity.aiAdminOnlyShort": "Apenas admin por agora",
     "entity.addTermPlaceholder": "Adicione termo, Enter",
     "entity.relatedMarketData": "Dados de mercado relacionados",
     "entity.addRelatedInstrument": "Adicionar instrumento relacionado",

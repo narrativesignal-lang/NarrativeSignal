@@ -132,6 +132,12 @@ class GeminiProvider:
 
 
 def get_provider() -> AIProvider:
+    """
+    Resolve the configured LLM client (OpenAI preferred, else Gemini).
+
+    **Must only be used after** ``can_use_paid_ai`` / route-level checks — today
+    ``analyze_documents`` enforces that; do not call for unauthenticated or non-entitled users.
+    """
     # Prefer explicit keys; otherwise fall back to heuristic provider.
     if settings.openai_api_key:
         return OpenAIProvider()

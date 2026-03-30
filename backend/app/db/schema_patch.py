@@ -209,6 +209,23 @@ def ensure_report_label_columns(engine) -> None:
         logger.warning("Schema patch reports label/schedule_type failed: %s", e)
 
 
+def ensure_users_plan_and_ai_level_columns(engine) -> None:
+    """Future billing: plan_code and ai_access_level (defaults preserve existing behavior)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_code VARCHAR(64) NOT NULL DEFAULT 'free'")
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_access_level VARCHAR(32) NOT NULL DEFAULT 'none'"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch users plan_code/ai_access_level failed: %s", e)
+
+
 def ensure_users_paid_access_column(engine) -> None:
     """Paid-feature flag (e.g. event timeline): requires paid_access + credits; admins bypass in app code."""
     try:
@@ -475,6 +492,7 @@ def run_schema_patches(engine) -> None:
     """Run all startup-safe schema patches. Call from API and worker startup."""
     ensure_active_market_pool_table(engine)
     ensure_macro_news_list_snapshots_table(engine)
+    ensure_users_plan_and_ai_level_columns(engine)
     ensure_users_paid_access_column(engine)
     ensure_users_is_admin_column(engine)
     ensure_users_profile_name_column(engine)

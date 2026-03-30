@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import user_is_admin
+from app.core.user_admin import user_is_admin
 from app.models.portfolio import Instrument, PortfolioEntity
 from app.models.user import User
 from app.schemas.entity_timeline import (

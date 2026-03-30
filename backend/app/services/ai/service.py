@@ -5,8 +5,10 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.feature_access import FeatureKey, can_access_feature
 from app.models.document import SourceDocument
 from app.models.document_analysis import DocumentAnalysis
+from app.models.user import User
 from app.services.ai.providers import AnalysisResult, get_provider
 
 
@@ -15,12 +17,20 @@ def analyze_documents(
     db: Session,
     group_id: uuid.UUID,
     document_ids: list[uuid.UUID],
+    acting_user_id: uuid.UUID | None = None,
 ) -> int:
     """
     Analyze documents and persist results if not already present for the chosen provider.
     Returns number of analyses created.
+
+    ``acting_user_id``: owner of the monitoring run; non-admins never invoke LLM providers (returns 0).
     """
     if not document_ids:
+        return 0
+    if acting_user_id is None:
+        return 0
+    owner = db.get(User, acting_user_id)
+    if not owner or not can_access_feature(owner, FeatureKey.DOCUMENT_LLM_ANALYSIS):
         return 0
 
     provider = get_provider()

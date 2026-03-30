@@ -169,7 +169,7 @@ export function EntityEventTimeline({
   }, []);
 
   const runAi = useCallback(async () => {
-    if (!selectedId || !access?.can_interact) return;
+    if (!selectedId || !access?.can_interact || !access?.is_admin) return;
     let custom_start_iso: string | null = null;
     let custom_end_iso: string | null = null;
     if (summaryWindow === "custom") {
@@ -215,6 +215,7 @@ export function EntityEventTimeline({
   }, [
     selectedId,
     access?.can_interact,
+    access?.is_admin,
     entityId,
     provider,
     summaryWindow,
@@ -325,6 +326,8 @@ export function EntityEventTimeline({
                       ))}
                     </ul>
                     <div className="border-t border-slate-800 pt-3">
+                      {access?.is_admin ? (
+                        <>
                       <div className="text-xs font-semibold text-slate-300">{t("timeline.aiSummary")}</div>
                       <div className="mt-2 space-y-2">
                         <label className="block text-[11px] text-slate-500">
@@ -422,6 +425,10 @@ export function EntityEventTimeline({
                           ) : null}
                         </div>
                       ) : null}
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">{t("timeline.aiAdminOnlyNote")}</p>
+                      )}
                     </div>
                   </div>
                 ) : (

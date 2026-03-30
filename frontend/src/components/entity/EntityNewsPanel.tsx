@@ -1,15 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { api, parseApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 
 type NewsMode = "target" | "keywords";
 
-type EntityNewsPayload = Awaited<ReturnType<typeof api.getEntityNews>>;
-
 type InstrumentLite = { symbol: string; display_name: string | null } | null;
+
+const ENTITY_NEWS_STALE_MS = 5 * 60 * 1000;
 
 function formatRelative(iso: string | null): string {
   if (!iso) return "—";
@@ -47,61 +48,43 @@ export function EntityNewsPanel(props: {
   instrument: InstrumentLite;
   entityName: string;
   terms: string[];
+  onPendingChange?: (pending: boolean) => void;
 }) {
-  const { entityId, heightPx, instrument, entityName, terms } = props;
+  const { entityId, heightPx, instrument, entityName, terms, onPendingChange } = props;
   const { t } = useI18n();
   const [tab, setTab] = useState<NewsMode>("target");
-  const [cache, setCache] = useState<Partial<Record<NewsMode, EntityNewsPayload>>>({});
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const fetchMode = useCallback(
-    async (mode: NewsMode) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await api.getEntityNews(entityId, mode);
-        setCache((prev) => ({ ...prev, [mode]: res }));
-      } catch (e: unknown) {
-        setError(parseApiError(e));
-        setCache((prev) => ({
-          ...prev,
-          [mode]: {
-            mode,
-            query: null,
-            items: [],
-            cached: false,
-            error: "fetch_failed",
-          },
-        }));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [entityId]
-  );
+  const targetQ = useQuery({
+    queryKey: ["entity", "news", entityId, "target"],
+    queryFn: () => api.getEntityNews(entityId, "target"),
+    enabled: Boolean(entityId),
+    staleTime: ENTITY_NEWS_STALE_MS,
+    gcTime: 45 * 60 * 1000,
+  });
 
-  useEffect(() => {
-    setCache({});
-    setTab("target");
-    setError(null);
-    void fetchMode("target");
-  }, [entityId, fetchMode]);
+  const keywordsQ = useQuery({
+    queryKey: ["entity", "news", entityId, "keywords"],
+    queryFn: () => api.getEntityNews(entityId, "keywords"),
+    enabled: tab === "keywords" && terms.length > 0 && Boolean(entityId),
+    staleTime: ENTITY_NEWS_STALE_MS,
+    gcTime: 45 * 60 * 1000,
+  });
 
-  useEffect(() => {
-    if (tab === "keywords" && terms.length > 0 && !cache.keywords) {
-      void fetchMode("keywords");
-    }
-  }, [tab, terms.length, cache.keywords, fetchMode]);
-
-  const active = cache[tab];
+  const activeQ = tab === "target" ? targetQ : keywordsQ;
+  const active = activeQ.data;
   const items = active?.items ?? [];
   const backendErr = active?.error;
+
+  const listLoading = activeQ.isPending && !activeQ.data;
+
+  useEffect(() => {
+    onPendingChange?.(listLoading);
+  }, [listLoading, onPendingChange]);
 
   const showKeywordEmpty = tab === "keywords" && terms.length === 0;
   const showTargetHint = tab === "target" && !instrument && !entityName.trim();
   const showEmptyList =
-    !loading &&
+    !listLoading &&
     active &&
     items.length === 0 &&
     !showKeywordEmpty &&
@@ -109,11 +92,18 @@ export function EntityNewsPanel(props: {
     backendErr !== "fetch_failed";
 
   const countLabel =
-    loading && !active
+    listLoading && !active
       ? "—"
       : showKeywordEmpty || showTargetHint
         ? "—"
         : t("entity.newsCount", { count: items.length });
+
+  const clientError =
+    activeQ.isError && !active
+      ? parseApiError(activeQ.error)
+      : active && backendErr === "fetch_failed"
+        ? t("entity.newsError")
+        : null;
 
   return (
     <section
@@ -130,9 +120,9 @@ export function EntityNewsPanel(props: {
         </div>
         <button
           type="button"
-          onClick={() => void fetchMode(tab)}
+          onClick={() => void activeQ.refetch()}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-slate-700 bg-slate-950/40 text-slate-300 hover:border-slate-500 hover:bg-slate-800 disabled:opacity-45"
-          disabled={loading || showKeywordEmpty || showTargetHint}
+          disabled={listLoading || showKeywordEmpty || showTargetHint}
           aria-label={t("entity.newsRefresh")}
           title={t("entity.newsRefresh")}
         >
@@ -155,15 +145,18 @@ export function EntityNewsPanel(props: {
             </button>
           ))}
         </div>
-        {active?.cached && !loading ? (
+        {active?.cached && !listLoading ? (
           <span className="pr-1 text-[10px] text-slate-600">{t("entity.newsCached")}</span>
         ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        {error && backendErr === "fetch_failed" ? (
+        {clientError && !active ? (
+          <div className="mb-2 text-center text-sm text-amber-200/90">{clientError}</div>
+        ) : null}
+        {backendErr === "fetch_failed" && active && !activeQ.isFetching ? (
           <div className="mb-2 text-center text-sm text-amber-200/90">{t("entity.newsError")}</div>
         ) : null}
-        {loading && !active ? (
+        {listLoading && !active ? (
           <div className="space-y-2">
             {[0, 1, 2, 3].map((i) => (
               <div key={i} className="animate-pulse rounded border border-slate-800 bg-slate-950/50 p-2">
@@ -174,7 +167,7 @@ export function EntityNewsPanel(props: {
             ))}
           </div>
         ) : null}
-        {loading && active ? (
+        {listLoading && active ? (
           <div className="mb-2 text-[11px] text-slate-500">{t("entity.newsLoading")}</div>
         ) : null}
         {showKeywordEmpty ? (

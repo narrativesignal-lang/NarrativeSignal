@@ -1,4 +1,7 @@
+import { Suspense } from "react";
+
 import { Shell } from "@/components/Shell";
+import { DashboardLoadingFallback } from "@/app/dashboard/DashboardLoadingFallback";
 import EntityDetailPageClient from "./EntityDetailPageClient";
 
 type PageProps = { params: { id: string } };
@@ -17,5 +20,9 @@ export default function EntityDetailPage({ params }: PageProps) {
       </Shell>
     );
   }
-  return <EntityDetailPageClient entityId={id} />;
+  return (
+    <Suspense fallback={<DashboardLoadingFallback />}>
+      <EntityDetailPageClient entityId={id} />
+    </Suspense>
+  );
 }

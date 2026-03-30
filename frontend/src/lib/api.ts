@@ -236,6 +236,8 @@ export const api = {
       email: string;
       profile_name: string;
       credits_balance: number;
+      plan_code?: string;
+      ai_access_level?: string;
       paid_access: boolean;
       is_admin: boolean;
     }>("/api/auth/me"),
@@ -246,6 +248,8 @@ export const api = {
       email: string;
       profile_name: string;
       credits_balance: number;
+      plan_code?: string;
+      ai_access_level?: string;
       paid_access: boolean;
       is_admin: boolean;
     }>("/api/auth/profile", { method: "PATCH", body: JSON.stringify({ profile_name }) }),

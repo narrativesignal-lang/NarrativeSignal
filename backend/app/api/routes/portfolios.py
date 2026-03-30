@@ -45,8 +45,9 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_feature
 from app.core.config import settings
+from app.core.feature_access import FeatureKey
 from app.core.limits import (
     MAX_ENTITIES_PER_PORTFOLIO,
     MAX_ITEMS_PER_ENTITY,
@@ -1450,7 +1451,7 @@ def post_entity_price_timeline_ai_summary(
     entity_id: str,
     body: AiSummaryRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_feature(FeatureKey.TIMELINE_AI_SUMMARY)),
 ) -> AiSummaryResponse:
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
@@ -1458,9 +1459,6 @@ def post_entity_price_timeline_ai_summary(
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    allowed, _reason = timeline_can_interact(current_user)
-    if not allowed:
-        raise HTTPException(status_code=403, detail=TIMELINE_PREMIUM_MESSAGE)
     terms = db.scalars(select(EntityTerm).where(EntityTerm.entity_id == entity.id)).all()
     term_strs = [t.term for t in terms]
     win = get_timeline_window(user=current_user, point_id=body.point_id, entity_terms=term_strs)
