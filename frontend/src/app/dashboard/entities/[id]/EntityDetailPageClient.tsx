@@ -116,6 +116,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [chartSavePending, setChartSavePending] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiIdea, setAiIdea] = useState("");
+  const [aiKeywords, setAiKeywords] = useState<string[]>([]);
+  const [aiKeywordError, setAiKeywordError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
   const [relatedInstruments, setRelatedInstruments] = useState<RelatedInstrument[]>([]);
@@ -625,6 +627,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
 
   const handleAiSuggest = useCallback(async () => {
     setAiLoading(true);
+    setAiKeywords([]);
+    setAiKeywordError(null);
     try {
       const res = await api.aiKeywordSuggestions({
         idea: aiIdea.trim(),
@@ -632,13 +636,13 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         asset_class: entity?.instrument?.asset_class ?? undefined,
         portfolio: entity?.portfolio_name ?? undefined,
       });
-      (res.keywords ?? []).forEach((k) => addTerm(k));
+      setAiKeywords((res.keywords ?? []).slice(0, 8));
     } catch (e: unknown) {
-      setError((e as { message?: string })?.message ?? "AI suggestion failed");
+      setAiKeywordError(parseApiError(e));
     } finally {
       setAiLoading(false);
     }
-  }, [aiIdea, entity, addTerm]);
+  }, [aiIdea, entity]);
 
   const pickWorkspaceBlockType = useCallback((type: WorkspaceChartType) => {
     setWorkspaceCharts((prev) => {
@@ -820,7 +824,12 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               {userLoading ? null : isAdminUser ? (
                 <button
                   type="button"
-                  onClick={() => { setAiOpen(true); setAiIdea(""); }}
+                  onClick={() => {
+                    setAiOpen(true);
+                    setAiIdea("");
+                    setAiKeywords([]);
+                    setAiKeywordError(null);
+                  }}
                   className="text-xs text-indigo-300 hover:text-indigo-200"
                 >
                   {t("entity.aiSuggestion")}
@@ -1230,24 +1239,60 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
             <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-xl">
               <h3 className="text-lg font-semibold text-slate-100">{t("entity.aiKeywordSuggestion")}</h3>
+              <p className="mt-1 text-xs text-slate-400">{t("entity.aiSuggestionDesc")}</p>
               <textarea
                 className="mt-3 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
                 rows={3}
-                placeholder={t("entity.aiPlaceholder")}
+                placeholder="Describe a target or industry (e.g. a stock you're interested in). We'll suggest up to 8 keywords."
                 value={aiIdea}
                 onChange={(e) => setAiIdea(e.target.value)}
               />
-              <div className="mt-3 flex justify-end gap-2">
-                <button type="button" onClick={() => setAiOpen(false)} className="rounded px-3 py-2 text-sm text-slate-400 hover:bg-slate-800">
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { handleAiSuggest(); setAiOpen(false); }}
-                  disabled={aiLoading || !aiIdea.trim()}
-                  className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                >
-                  {aiLoading ? t("entity.generating") : t("entity.addKeywords")}
+              <button
+                type="button"
+                onClick={() => {
+                  void handleAiSuggest();
+                }}
+                disabled={aiLoading || !aiIdea.trim()}
+                className="mt-2 w-full rounded bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {aiLoading ? t("entity.generating") : t("entity.generateKeywords")}
+              </button>
+              {aiKeywordError ? (
+                <p className="mt-2 text-xs text-amber-300/90" role="alert">
+                  {aiKeywordError}
+                </p>
+              ) : null}
+              {aiKeywords.length > 0 ? (
+                <div className="mt-3 rounded-lg border border-slate-700/80 bg-slate-950/50 p-2">
+                  <p className="text-xs font-medium text-slate-400">Suggested keywords</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5" role="list" aria-label="Suggested keywords">
+                    {aiKeywords.slice(0, 8).map((k) => (
+                      <span
+                        key={k}
+                        role="listitem"
+                        className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-600 bg-slate-800/90 pl-2.5 pr-1 py-0.5 text-xs text-slate-200"
+                      >
+                        <span className="select-all truncate" title={k}>
+                          {k}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            addTerm(k);
+                          }}
+                          className="shrink-0 rounded-full bg-slate-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-slate-500"
+                          title="Add to Terms"
+                        >
+                          +
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div className="mt-4 flex justify-end">
+                <button type="button" onClick={() => setAiOpen(false)} className="rounded px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+                  {t("common.close")}
                 </button>
               </div>
             </div>
