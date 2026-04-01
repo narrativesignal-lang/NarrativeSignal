@@ -504,6 +504,7 @@ export function ResearchWorkspace({
                       <ResearchChart
                         type={p.type}
                         hasContext={setupComplete}
+                        entityId={activeTab?.setup?.entity_id ?? null}
                         onRemove={() => removeChart(i)}
                         onMoveUp={i > 0 ? () => moveChart(i, "up") : undefined}
                         onMoveDown={i < panels.length - 1 ? () => moveChart(i, "down") : undefined}
@@ -513,6 +514,7 @@ export function ResearchWorkspace({
                     <ResearchChart
                       type={p.type}
                       hasContext={setupComplete}
+                      entityId={activeTab?.setup?.entity_id ?? null}
                       onRemove={() => removeChart(i)}
                       onMoveUp={i > 0 ? () => moveChart(i, "up") : undefined}
                       onMoveDown={i < panels.length - 1 ? () => moveChart(i, "down") : undefined}

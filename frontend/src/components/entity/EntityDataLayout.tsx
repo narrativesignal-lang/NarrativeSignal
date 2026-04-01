@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { EntityConceptGuideModal } from "@/components/entity/EntityConceptGuideModal";
 import { SlowLoadBanner, useSlowLoadVisible } from "@/components/SlowLoadBanner";
@@ -32,6 +33,7 @@ type EntityDataLayoutProps = {
 
 export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
   const { t, locale } = useI18n();
+  const router = useRouter();
   const { user: authUser, loading: userLoading } = useUser();
   const isAdminUser = Boolean(authUser?.is_admin);
   const [conceptGuideOpen, setConceptGuideOpen] = useState(false);
@@ -57,6 +59,10 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
   const [portfolioSuccess, setPortfolioSuccess] = useState<string | null>(null);
   const [portfolioFetchPending, setPortfolioFetchPending] = useState(false);
   const [entitiesFetchPending, setEntitiesFetchPending] = useState(false);
+  const [entityCreateBusy, setEntityCreateBusy] = useState(false);
+  const [portfolioDeleteBusyId, setPortfolioDeleteBusyId] = useState<string | null>(null);
+  const [entityDeleteBusyId, setEntityDeleteBusyId] = useState<string | null>(null);
+  const [openingEntityId, setOpeningEntityId] = useState<string | null>(null);
 
   const dashSlowVisible = useSlowLoadVisible(
     isActive && (portfolioFetchPending || entitiesFetchPending)
@@ -144,6 +150,7 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
 
   const handleCreateEntity = useCallback(async () => {
     if (!selectedPortfolio || !entityName.trim()) return;
+    setEntityCreateBusy(true);
     setError(null);
     try {
       await api.createEntity({
@@ -163,18 +170,23 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
       setInstrumentQuery("");
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setEntityCreateBusy(false);
     }
   }, [selectedPortfolio, entityName, selectedInstrument, terms]);
 
   const handleDeleteEntity = useCallback(
     async (entityId: string) => {
       if (!selectedPortfolio || !confirm(t("entity.confirmDeleteEntity"))) return;
+      setEntityDeleteBusyId(entityId);
       setError(null);
       try {
         await api.deleteEntity(entityId);
         setEntities(await api.listEntities(selectedPortfolio.id));
       } catch (e: unknown) {
         setError(parseApiError(e));
+      } finally {
+        setEntityDeleteBusyId(null);
       }
     },
     [selectedPortfolio, t]
@@ -199,6 +211,11 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
         asset_class: selectedInstrument?.asset_class ?? (instrumentCategory ? assetClassMap[instrumentCategory] : undefined),
         portfolio: selectedPortfolio?.name ?? undefined,
       });
+      if (res.disabled) {
+        setAiKeywordError("AI keyword suggestions are temporarily disabled.");
+        setAiKeywords([]);
+        return;
+      }
       setAiKeywords((res.keywords ?? []).slice(0, 8));
     } catch (e: unknown) {
       setAiKeywordError(parseApiError(e));
@@ -210,6 +227,7 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
   const handleDeletePortfolio = useCallback(
     async (portfolioId: string) => {
       if (!confirm(t("entity.confirmDeletePortfolio"))) return;
+      setPortfolioDeleteBusyId(portfolioId);
       setError(null);
       try {
         await api.deletePortfolio(portfolioId);
@@ -228,6 +246,8 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
         }
       } catch (e: unknown) {
         setError(parseApiError(e));
+      } finally {
+        setPortfolioDeleteBusyId(null);
       }
     },
     [selectedPortfolio, t]
@@ -268,6 +288,7 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
               <button
                 type="button"
                 onClick={() => setSelectedPortfolio(p)}
+                disabled={portfolioDeleteBusyId === p.id}
                 className="min-w-0 flex-1 truncate text-left font-medium text-inherit"
               >
                 {p.name}
@@ -275,15 +296,19 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
               <button
                 type="button"
                 onClick={() => void handleDeletePortfolio(p.id)}
+                disabled={portfolioDeleteBusyId === p.id}
                 className="shrink-0 rounded px-2 py-0.5 text-xs text-red-300 hover:bg-red-500/90 hover:text-white"
               >
-                {t("common.delete")}
+                {portfolioDeleteBusyId === p.id ? t("common.loading") : t("common.delete")}
               </button>
             </div>
           ))}
         </div>
         <div className="mt-4 border-t border-slate-800 pt-4">
           <div className="text-xs font-semibold text-slate-300">{t("entity.addPortfolio")}</div>
+          <p className="mt-1 text-xs text-slate-500">
+            Newly added portfolios/targets can take up to a few hours before trend and history charts fully populate.
+          </p>
           <div className="mt-2 flex gap-2">
             <input
               className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100"
@@ -378,16 +403,26 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
                     </div>
                     <div className="mt-1 flex items-center gap-2">
                       <span className="text-xs text-slate-500">{t("entity.termsCount", { count: ent.terms.length })}</span>
-                      <Link
-                        href={`/dashboard/entities/${ent.id}`}
-                        className="text-xs text-indigo-300 hover:text-indigo-200"
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpeningEntityId(ent.id);
+                          router.push(`/dashboard/entities/${ent.id}`);
+                        }}
+                        disabled={openingEntityId === ent.id}
+                        className="text-xs text-indigo-300 hover:text-indigo-200 disabled:opacity-70"
                       >
-                        {t("entity.view")}
-                      </Link>
+                        {openingEntityId === ent.id ? `${t("entity.view")}…` : t("entity.view")}
+                      </button>
                     </div>
                   </div>
-                  <button type="button" onClick={() => handleDeleteEntity(ent.id)} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-red-300">
-                    {t("common.delete")}
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteEntity(ent.id)}
+                    disabled={entityDeleteBusyId === ent.id}
+                    className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-red-300 disabled:opacity-60"
+                  >
+                    {entityDeleteBusyId === ent.id ? t("common.loading") : t("common.delete")}
                   </button>
                 </div>
               ))}
@@ -399,6 +434,9 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
             <div className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-xl">
               <h3 className="text-lg font-semibold text-slate-100">{t("entity.createEntity")}</h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Some data-driven charts and metrics populate after background collection and may take up to a few hours.
+              </p>
               <div className="mt-4 space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-400">{t("entity.entityNameLabel")}</label>
@@ -491,7 +529,9 @@ export function EntityDataLayout({ isActive = true }: EntityDataLayoutProps) {
               </div>
               <div className="mt-6 flex justify-end gap-2">
                 <button type="button" onClick={() => setCreateOpen(false)} className="rounded px-3 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200">{t("common.cancel")}</button>
-                <button type="button" onClick={handleCreateEntity} disabled={!entityName.trim()} className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">{t("research.create")}</button>
+                <button type="button" onClick={handleCreateEntity} disabled={!entityName.trim() || entityCreateBusy} className="rounded bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                  {entityCreateBusy ? t("common.loading") : t("research.create")}
+                </button>
               </div>
             </div>
           </div>

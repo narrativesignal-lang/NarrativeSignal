@@ -80,15 +80,16 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
   }, [entityId, range]);
 
   const path = useMemo(() => (payload?.points?.length ? pointsToScenePath(payload.points) : []), [payload]);
+  const hasFullyRealInputs = payload?.source_status.search_trend === "real" && payload?.source_status.coverage_volume === "real";
   const dataState = useMemo(() => {
     if (loading) return "loading";
     if (error) return "empty";
+    if (payload && !hasFullyRealInputs) return "insufficient";
     if (!payload || path.length === 0) return "empty";
     if (payload.stale) return "stale";
-    if (payload.source_status.search_trend === "mock_fallback") return "mock_fallback";
     if (payload.source_status.search_trend === "real") return "real";
-    return "mock_fallback";
-  }, [loading, error, payload, path.length]);
+    return "empty";
+  }, [loading, error, payload, path.length, hasFullyRealInputs]);
 
   return (
     <div className="relative flex h-full w-full min-h-[160px] flex-col bg-[#0b1120]">
@@ -98,11 +99,11 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
           className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
             dataState === "real"
               ? "bg-emerald-900/40 text-emerald-200"
+              : dataState === "insufficient"
+                ? "bg-amber-900/40 text-amber-200"
               : dataState === "stale"
                 ? "bg-amber-900/40 text-amber-200"
-                : dataState === "mock_fallback"
-                  ? "bg-violet-900/40 text-violet-200"
-                  : "bg-slate-800 text-slate-300"
+                : "bg-slate-800 text-slate-300"
           }`}
         >
           {dataState}
@@ -127,6 +128,10 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
           <div className="flex h-[220px] items-center justify-center text-xs text-slate-500">{t("entity.loadingSeries")}</div>
         ) : error ? (
           <div className="flex h-[220px] items-center justify-center px-3 text-center text-xs text-red-300/90">{error}</div>
+        ) : payload && !hasFullyRealInputs ? (
+          <div className="flex h-[220px] items-center justify-center px-4 text-center text-xs text-slate-500">
+            Insufficient data: 3D path requires real search trend index and real coverage data.
+          </div>
         ) : path.length === 0 ? (
           <div className="flex h-[220px] items-center justify-center px-4 text-center text-xs text-slate-500">
             {t("entity.noMetricRows")}

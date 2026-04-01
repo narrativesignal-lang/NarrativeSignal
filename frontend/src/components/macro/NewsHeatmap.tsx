@@ -4,13 +4,12 @@ import { useMemo } from "react";
 import { useI18n } from "@/lib/i18n";
 import type { MacroCategorySlug } from "@/lib/macroCategories";
 import type { HeatmapCell } from "@/lib/macroMockData";
-import { mockHeatmapForCategory } from "@/lib/macroMockData";
 
 type Props = {
   categorySlug: MacroCategorySlug | null;
   selectedSubcategory: string | null;
   onSelectSubcategory: (name: string | null) => void;
-  /** Optional: override mock with real data when API exists */
+  /** From API-derived news counts (parent); empty when no category or no data yet */
   cells?: HeatmapCell[] | null;
 };
 
@@ -36,9 +35,8 @@ export function NewsHeatmap({
   const { t } = useI18n();
   const cells = useMemo(() => {
     if (cellsProp != null) return cellsProp;
-    if (!categorySlug) return [];
-    return mockHeatmapForCategory(categorySlug);
-  }, [categorySlug, cellsProp]);
+    return [];
+  }, [cellsProp]);
 
   const maxVolume = useMemo(() => Math.max(1, ...cells.map((c) => c.volume_24h)), [cells]);
 
@@ -81,7 +79,11 @@ export function NewsHeatmap({
                   (isSelected ? " ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-900" : "")
                 }
                 style={{ minHeight: `${h}px` }}
-                title={`${cell.name}: ${cell.volume_24h} (prev: ${cell.volume_prev_24h}), ${(cell.delta * 100).toFixed(1)}%`}
+                title={
+                  cell.footerLabel
+                    ? `${cell.name}: ${cell.footerLabel}`
+                    : `${cell.name}: ${cell.volume_24h} (prev: ${cell.volume_prev_24h})`
+                }
               >
                 <div className="text-sm sm:text-base font-medium text-slate-50 drop-shadow-sm line-clamp-2">
                   {cell.name}
@@ -93,12 +95,14 @@ export function NewsHeatmap({
                 </div>
                 <div className="mt-1 text-sm sm:text-base font-medium tabular-nums">
                   <span className={changeTextColor(cell.delta)}>
-                    {(() => {
-                      const pct = cell.delta * 100;
-                      const magnitude = Math.abs(pct).toFixed(0);
-                      const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
-                      return `${sign}${magnitude}%`;
-                    })()}
+                    {cell.footerLabel
+                      ? cell.footerLabel
+                      : (() => {
+                          const pct = cell.delta * 100;
+                          const magnitude = Math.abs(pct).toFixed(0);
+                          const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
+                          return `${sign}${magnitude}%`;
+                        })()}
                   </span>
                 </div>
               </button>

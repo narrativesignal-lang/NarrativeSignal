@@ -54,7 +54,6 @@ export function EntityEventTimeline({
   visibleTimeRange = null,
 }: EntityEventTimelineProps) {
   const { t } = useI18n();
-  const premiumCtaTrimmed = t("timeline.premiumCta").trim();
   const panelId = useId();
   const [officialPoints, setOfficialPoints] = useState<TimelinePointBuilt[]>([]);
   const [access, setAccess] = useState<TimelineAccess | null>(null);
@@ -120,12 +119,12 @@ export function EntityEventTimeline({
   }, [barExtent, visibleTimeRange]);
 
   const displayPoints = useMemo(() => {
-    if (!access?.can_interact || !bars.length || !trackRange || trackRange.end <= trackRange.start) {
+    if (!bars.length || !trackRange || trackRange.end <= trackRange.start) {
       return [] as TimelinePointBuilt[];
     }
     const sym = symbol.trim().toUpperCase();
     return buildSyncedTimelinePoints(sym, bars, officialPoints, trackRange.start, trackRange.end);
-  }, [access?.can_interact, bars, officialPoints, symbol, trackRange]);
+  }, [bars, officialPoints, symbol, trackRange]);
 
   const openPoint = useCallback(
     async (pointId: string) => {
@@ -135,9 +134,6 @@ export function EntityEventTimeline({
       setWindowData(null);
       setAiBlock(null);
       setSummaryWindow("point");
-      if (!access?.can_interact) {
-        return;
-      }
       setWindowLoading(true);
       try {
         const w = await api.getEntityPriceTimelineWindow(entityId, pointId);
@@ -149,7 +145,7 @@ export function EntityEventTimeline({
         setWindowLoading(false);
       }
     },
-    [access?.can_interact, entityId]
+    [entityId]
   );
 
   const closePanel = useCallback(() => {
@@ -157,14 +153,6 @@ export function EntityEventTimeline({
     setSelectedId(null);
     setWindowData(null);
     setWindowErr(null);
-    setAiBlock(null);
-  }, []);
-
-  const openPremiumInfo = useCallback(() => {
-    setSelectedId(null);
-    setPanelOpen(true);
-    setWindowErr(null);
-    setWindowData(null);
     setAiBlock(null);
   }, []);
 
@@ -255,13 +243,7 @@ export function EntityEventTimeline({
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm">
-                {!access?.can_interact ? (
-                  <div className="space-y-2 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-amber-100/90">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-200/80">{t("timeline.premiumTitle")}</div>
-                    <p className="text-sm leading-relaxed">{t("timeline.premiumBody")}</p>
-                    {premiumCtaTrimmed ? <p className="text-xs text-amber-200/70">{t("timeline.premiumCta")}</p> : null}
-                  </div>
-                ) : windowLoading ? (
+                {windowLoading ? (
                   <p className="text-slate-400">{t("common.loading")}</p>
                 ) : windowErr ? (
                   <p className="text-red-300">{windowErr}</p>
@@ -285,7 +267,17 @@ export function EntityEventTimeline({
                         {windowData.point_type === "volatility" ? t("timeline.pointVolatility") : t("timeline.pointOfficial")}
                       </div>
                     </div>
-                    <p className="text-[11px] text-slate-500">{t("timeline.newsPlaceholder")}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {windowData.point_type === "volatility" ? t("timeline.newsContextVolatility") : t("timeline.newsContextOfficial")}
+                    </p>
+                    {!windowData.items.length ? (
+                      <p className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2.5 text-sm text-slate-400">
+                        {(windowData.status_message && windowData.status_message.trim()) ||
+                          (windowData.news_status === "fetch_failed"
+                            ? t("timeline.newsFetchFailed")
+                            : t("timeline.noRelevantNews"))}
+                      </p>
+                    ) : (
                     <ul className="space-y-3">
                       {windowData.items.map((item) => (
                         <li key={item.id} className="rounded-lg border border-slate-800 bg-slate-950/60 p-2.5">
@@ -325,6 +317,7 @@ export function EntityEventTimeline({
                         </li>
                       ))}
                     </ul>
+                    )}
                     <div className="border-t border-slate-800 pt-3">
                       {access?.is_admin ? (
                         <>
@@ -461,14 +454,6 @@ export function EntityEventTimeline({
         <p className="text-[11px] text-slate-500">{t("timeline.loading")}</p>
       ) : loadErr ? (
         <p className="text-[11px] text-red-400">{t("timeline.loadError")}</p>
-      ) : access && !access.can_interact ? (
-        <button
-          type="button"
-          onClick={openPremiumInfo}
-          className="flex h-7 w-full cursor-pointer items-center justify-center rounded bg-slate-950/80 px-2 ring-1 ring-slate-800 hover:bg-slate-900/90"
-        >
-          <span className="text-center text-[10px] leading-tight text-slate-500">{t("timeline.lockedStrip")}</span>
-        </button>
       ) : !access ? null : !bars.length ? (
         <p className="text-[11px] text-slate-500">{t("timeline.empty")}</p>
       ) : !displayPoints.length || span <= 0 ? (

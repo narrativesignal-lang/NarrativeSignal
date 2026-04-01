@@ -80,7 +80,13 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.windowTitle": "News window",
     "timeline.windowRange": "Window (UTC)",
     "timeline.windowFocus": "Focus day",
-    "timeline.newsPlaceholder": "Sample rows — live headlines will replace these when feeds connect.",
+    "timeline.newsPlaceholder": "News in this window comes from your entity’s Google News RSS query when available; empty means no dated headlines matched this range.",
+    "timeline.newsContextVolatility":
+      "Headlines are filtered to this symbol, company name, and your saved terms, within ±12h of the high-move day (UTC).",
+    "timeline.newsContextOfficial":
+      "Only headlines that match strict official-event patterns (e.g. filings, earnings, Fed/CPI) and your entity anchors are shown.",
+    "timeline.noRelevantNews": "No relevant news found for this move.",
+    "timeline.newsFetchFailed": "News could not be loaded for this window. Try again later.",
     "timeline.sentiment.bullish": "Bullish",
     "timeline.sentiment.bearish": "Bearish",
     "timeline.sentiment.neutral": "Neutral",
@@ -412,6 +418,10 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.windowRange": "窗口（UTC）",
     "timeline.windowFocus": "焦点日",
     "timeline.newsPlaceholder": "示例条目 — 接入数据源后将替换为真实标题。",
+    "timeline.newsContextVolatility": "标题已按交易代码、公司名称、已保存关键词筛选，并限制在大波动日 UTC 前后约 12 小时内。",
+    "timeline.newsContextOfficial": "仅显示同时满足严格“官方事件”句式（如财报、监管文件、美联储/CPI 等）且与目标相关的标题。",
+    "timeline.noRelevantNews": "未找到与此次波动相关的新闻。",
+    "timeline.newsFetchFailed": "暂时无法加载该时间窗口的新闻，请稍后重试。",
     "timeline.sentiment.bullish": "偏多",
     "timeline.sentiment.bearish": "偏空",
     "timeline.sentiment.neutral": "中性",
@@ -1019,6 +1029,12 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
     "timeline.windowRange": "Janela (UTC)",
     "timeline.windowFocus": "Dia foco",
     "timeline.newsPlaceholder": "Linhas de exemplo — títulos reais quando as fontes estiverem ligadas.",
+    "timeline.newsContextVolatility":
+      "Manchetes filtradas pelo símbolo, nome da empresa e termos guardados, numa janela de ±12h do dia de grande movimento (UTC).",
+    "timeline.newsContextOfficial":
+      "Só aparecem manchetes que combinam padrões estritos de eventos oficiais (ex.: relatórios, Fed/CPI) e as âncoras do alvo.",
+    "timeline.noRelevantNews": "Não foram encontradas notícias relevantes para este movimento.",
+    "timeline.newsFetchFailed": "Não foi possível carregar notícias para esta janela. Tente mais tarde.",
     "timeline.sentiment.bullish": "Altista",
     "timeline.sentiment.bearish": "Baixista",
     "timeline.sentiment.neutral": "Neutro",

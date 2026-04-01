@@ -27,7 +27,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: "/reports", labelKey: "nav.reports" },
     { href: "/schedules", labelKey: "nav.schedules" },
     { href: "/community", labelKey: "nav.community" },
-    ...(user?.is_admin ? [{ href: "/admin/users", labelKey: "nav.adminUsers" as const }] : []),
+    ...(user?.is_admin
+      ? [
+          { href: "/admin/users", labelKey: "nav.adminUsers" as const },
+          { href: "/admin/runtime-flags", labelKey: "nav.adminRuntimeFlags" as const },
+        ]
+      : []),
   ];
 
   const navLinkClass = (href: string) =>
@@ -90,7 +95,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             {/* Desktop nav */}
             <nav className="hidden gap-2 text-sm text-slate-300 md:flex">
               {nav.map((i) => (
-                <Link key={i.href} href={i.href} className={navLinkClass(i.href)}>
+                <Link key={i.href} href={i.href} prefetch={false} className={navLinkClass(i.href)}>
                   {t(i.labelKey)}
                 </Link>
               ))}
@@ -106,6 +111,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             )}
             <Link
               href="/profile"
+              prefetch={false}
               className="rounded bg-slate-800 px-2.5 py-1.5 text-sm text-slate-100 hover:bg-slate-700 sm:px-3"
             >
               {t("nav.profile")}
@@ -120,6 +126,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={i.href}
                   href={i.href}
+                  prefetch={false}
                   onClick={() => setMobileNavOpen(false)}
                   className={navLinkClass(i.href)}
                 >

@@ -29,6 +29,7 @@ export default function ReportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
   const [filterLabel, setFilterLabel] = useState("");
   const [filterScheduleType, setFilterScheduleType] = useState("");
 
@@ -41,6 +42,7 @@ export default function ReportsPage() {
   ];
 
   const loadReports = useCallback(async () => {
+    setListLoading(true);
     try {
       const [r, countRes] = await Promise.all([
         api.reports(100, null, filterLabel || null, filterScheduleType || null),
@@ -55,6 +57,8 @@ export default function ReportsPage() {
       setError(null);
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setListLoading(false);
     }
   }, [filterLabel, filterScheduleType]);
 
@@ -142,6 +146,7 @@ export default function ReportsPage() {
             </div>
           </div>
           <p className="mt-1 text-xs text-slate-400">{t("reports.filterHint")}</p>
+          {listLoading ? <p className="mt-1 text-xs text-slate-500">{t("common.loading")}</p> : null}
           <div className="mt-2 flex flex-wrap gap-2">
             <span className="self-center text-xs text-slate-400">{t("reports.filterColon")}:</span>
             <input
@@ -149,11 +154,13 @@ export default function ReportsPage() {
               placeholder={t("reports.filterLabelPlaceholder")}
               value={filterLabel}
               onChange={(e) => setFilterLabel(e.target.value)}
+              disabled={listLoading}
               className="w-28 rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500"
             />
             <select
               value={filterScheduleType}
               onChange={(e) => setFilterScheduleType(e.target.value)}
+              disabled={listLoading}
               className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-200"
             >
               {scheduleTypeOptions.map((o) => (

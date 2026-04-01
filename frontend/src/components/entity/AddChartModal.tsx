@@ -4,21 +4,13 @@ type SkillCategory = "index" | "analysis" | "ai_analysis";
 
 const ENTITY_SKILLS = [
   // Index: direct data indicators
-  { id: "search_volume", label: "Search Volume", category: "index" as SkillCategory },
+  { id: "search_volume", label: "Search Trend Index", category: "index" as SkillCategory },
   { id: "coverage_volume", label: "Coverage Volume", category: "index" as SkillCategory },
   { id: "sentiment_score", label: "Sentiment", category: "index" as SkillCategory },
-  {
-    id: "order_flow",
-    label: "Order Flow",
-    category: "index" as SkillCategory,
-    placeholder: true,
-    description: "Live order flow feed not connected yet. Will use market depth and trade-flow data when available.",
-  },
   // Analysis: derived metrics from one or more indicators
   { id: "search_momentum", label: "Search Momentum", category: "analysis" as SkillCategory },
   { id: "search_acceleration", label: "Search Acceleration", category: "analysis" as SkillCategory },
   { id: "coverage_momentum", label: "Coverage Momentum", category: "analysis" as SkillCategory },
-  { id: "coverage_acceleration", label: "Coverage Acceleration", category: "analysis" as SkillCategory },
   { id: "quadrant_flow", label: "Narrative Flow", category: "analysis" as SkillCategory },
   // AI Analysis: scaffold for future AI-powered blocks
   // No concrete AI blocks yet; section is shown in UI to set expectations.
@@ -93,9 +85,6 @@ export function AddChartModal({
                                   </span>
                                 ) : null}
                               </div>
-                              {"description" in s && s.description ? (
-                                <div className="mt-0.5 text-[11px] text-slate-400">{s.description}</div>
-                              ) : null}
                             </button>
                           </li>
                         ))}

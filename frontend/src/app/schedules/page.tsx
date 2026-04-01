@@ -159,6 +159,7 @@ export default function SchedulesPage() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [highAlertOpen, setHighAlertOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [actionBusy, setActionBusy] = useState<Record<string, "trigger" | "pause" | "resume" | "delete">>({});
   const highAlertExplained = useRef(false);
   const defaultNameSeeded = useRef(false);
 
@@ -283,42 +284,70 @@ export default function SchedulesPage() {
 
   async function trigger(id: string) {
     setError(null);
+    setActionBusy((prev) => ({ ...prev, [id]: "trigger" }));
     try {
       await api.triggerSchedule(id);
       setToast(t("schedules.triggerToast"));
       window.setTimeout(() => setToast(null), 6500);
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setActionBusy((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   }
 
   async function pause(id: string) {
     setError(null);
+    setActionBusy((prev) => ({ ...prev, [id]: "pause" }));
     try {
       await api.pauseSchedule(id);
       await refresh();
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setActionBusy((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   }
 
   async function resume(id: string) {
     setError(null);
+    setActionBusy((prev) => ({ ...prev, [id]: "resume" }));
     try {
       await api.resumeSchedule(id);
       await refresh();
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setActionBusy((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   }
 
   async function remove(id: string) {
     setError(null);
+    setActionBusy((prev) => ({ ...prev, [id]: "delete" }));
     try {
       await api.deleteSchedule(id);
       await refresh();
     } catch (e: unknown) {
       setError(parseApiError(e));
+    } finally {
+      setActionBusy((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
   }
 
@@ -359,6 +388,9 @@ export default function SchedulesPage() {
             </div>
             <p className="mt-1 text-xs text-slate-400">
               {totalSchedules} / {MAX_SCHEDULES} saved &nbsp;•&nbsp; {activeCount} / {MAX_ACTIVE_SCHEDULES} active
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              New targets and schedules can take up to a few hours before all trend/history metrics appear.
             </p>
             <div className="mt-3 space-y-2">
               <label className="block">
@@ -575,31 +607,34 @@ export default function SchedulesPage() {
                       <button
                         className="rounded bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
                         onClick={() => trigger(s.id)}
+                        disabled={Boolean(actionBusy[s.id])}
                       >
-                        {t("schedules.triggerNow")}
+                        {actionBusy[s.id] === "trigger" ? t("common.loading") : t("schedules.triggerNow")}
                       </button>
                       {s.status === "paused" ? (
                         <button
                           className="rounded bg-emerald-700 px-3 py-1.5 text-sm text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
                           onClick={() => resume(s.id)}
-                          disabled={atActiveLimit}
+                          disabled={atActiveLimit || Boolean(actionBusy[s.id])}
                           title={atActiveLimit ? LIMIT_MESSAGES.MAX_ACTIVE_SCHEDULES : undefined}
                         >
-                          {t("schedules.resume")}
+                          {actionBusy[s.id] === "resume" ? t("common.loading") : t("schedules.resume")}
                         </button>
                       ) : (
                         <button
                           className="rounded bg-amber-700 px-3 py-1.5 text-sm text-white hover:bg-amber-600"
                           onClick={() => pause(s.id)}
+                          disabled={Boolean(actionBusy[s.id])}
                         >
-                          {t("schedules.pause")}
+                          {actionBusy[s.id] === "pause" ? t("common.loading") : t("schedules.pause")}
                         </button>
                       )}
                       <button
                         className="rounded bg-red-700 px-3 py-1.5 text-sm text-white hover:bg-red-600"
                         onClick={() => remove(s.id)}
+                        disabled={Boolean(actionBusy[s.id])}
                       >
-                        {t("schedules.delete")}
+                        {actionBusy[s.id] === "delete" ? t("common.loading") : t("schedules.delete")}
                       </button>
                     </div>
                   </div>

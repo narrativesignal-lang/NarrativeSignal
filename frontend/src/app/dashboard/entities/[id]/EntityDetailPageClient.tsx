@@ -38,6 +38,9 @@ import {
 import { EntityQuadrantBlock } from "@/components/entity/EntityQuadrantBlock";
 import { EntitySeriesVolumeBlock } from "@/components/entity/EntitySeriesVolumeBlock";
 import { EntityMetricDerivedBlock } from "@/components/entity/EntityMetricDerivedBlock";
+import { TripleSignalChartBlock } from "@/components/entity/TripleSignalChartBlock";
+import { EntityInstitutionBiasBlock } from "@/components/entity/EntityInstitutionBiasBlock";
+import { EntityRatingDistributionBlock } from "@/components/entity/EntityRatingDistributionBlock";
 import { WorkspaceChartErrorBoundary } from "@/components/entity/WorkspaceChartErrorBoundary";
 import { SectionHelp } from "@/components/SectionHelp";
 import { EntityEventTimeline } from "@/components/entity/EntityEventTimeline";
@@ -119,6 +122,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [aiKeywords, setAiKeywords] = useState<string[]>([]);
   const [aiKeywordError, setAiKeywordError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [saveTermsBusy, setSaveTermsBusy] = useState(false);
+  const [addRelatedBusy, setAddRelatedBusy] = useState(false);
 
   const [relatedInstruments, setRelatedInstruments] = useState<RelatedInstrument[]>([]);
   const [relatedQuotes, setRelatedQuotes] = useState<Record<string, { price: number | null; change_percent: number | null }>>({});
@@ -421,6 +426,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const addRelatedInstrument = useCallback(
     async (hit: PortfolioInstrumentSearchHit) => {
       if (!id) return;
+      setAddRelatedBusy(true);
       setError(null);
       try {
         await api.addEntityRelatedInstrument(id, {
@@ -433,6 +439,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         loadRelatedInstruments();
       } catch (e: unknown) {
         setError(parseApiError(e) || "Failed to add related instrument");
+      } finally {
+        setAddRelatedBusy(false);
       }
     },
     [id, loadRelatedInstruments]
@@ -616,12 +624,15 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
 
   const saveTerms = useCallback(async () => {
     if (!entity) return;
+    setSaveTermsBusy(true);
     setError(null);
     try {
       await api.replaceEntityTerms(entity.id, terms);
       loadEntity();
     } catch (e: unknown) {
       setError((e as { message?: string })?.message ?? "Failed to save terms");
+    } finally {
+      setSaveTermsBusy(false);
     }
   }, [entity, terms, loadEntity]);
 
@@ -636,6 +647,11 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         asset_class: entity?.instrument?.asset_class ?? undefined,
         portfolio: entity?.portfolio_name ?? undefined,
       });
+      if (res.disabled) {
+        setAiKeywordError("AI keyword suggestions are temporarily disabled.");
+        setAiKeywords([]);
+        return;
+      }
       setAiKeywords((res.keywords ?? []).slice(0, 8));
     } catch (e: unknown) {
       setAiKeywordError(parseApiError(e));
@@ -840,12 +856,16 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               <button
                 type="button"
                 onClick={saveTerms}
-                className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600"
+                disabled={saveTermsBusy}
+                className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-60"
               >
-                {t("entity.saveTerms")}
+                {saveTermsBusy ? t("common.loading") : t("entity.saveTerms")}
               </button>
             </div>
           </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Newly added targets/terms may need up to a few hours before trend/history metrics fully appear.
+          </p>
           <div className="mt-2 flex flex-wrap gap-1.5 rounded border border-slate-700 bg-slate-950 p-2">
             {terms.map((term) => (
               <span key={term} className="inline-flex items-center gap-1 rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-200">
@@ -941,11 +961,11 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               <button
                 type="button"
                 onClick={() => setAddRelatedOpen(true)}
-                disabled={relatedInstruments.length >= MAX_ITEMS_PER_ENTITY}
+                disabled={relatedInstruments.length >= MAX_ITEMS_PER_ENTITY || addRelatedBusy}
                 title={relatedInstruments.length >= MAX_ITEMS_PER_ENTITY ? t("entity.perEntityHint", { max: MAX_ITEMS_PER_ENTITY }) : undefined}
                 className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {t("entity.addRelatedInstrument")}
+                {addRelatedBusy ? t("common.loading") : t("entity.addRelatedInstrument")}
               </button>
             </div>
           </div>
@@ -1193,6 +1213,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                         <EntitySeriesVolumeBlock entityId={id} period={period} kind="search" />
                       ) : block.type === "series_coverage_volume" ? (
                         <EntitySeriesVolumeBlock entityId={id} period={period} kind="coverage" />
+                      ) : block.type === "series_triple_signal" ? (
+                        <TripleSignalChartBlock entityId={id} period={period} />
                       ) : block.type === "metric_momentum" ? (
                         <EntityMetricDerivedBlock entityId={id} period={period} metric="momentum" />
                       ) : block.type === "metric_acceleration" ? (
@@ -1205,8 +1227,10 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                         <EntitySplitChart entityId={id} period={period} />
                       ) : block.type === "split_sentiment" ? (
                         <EntitySplitSentimentChart entityId={id} period={period} />
-                      ) : block.type === "analysis_institution_bias" || block.type === "analysis_rating_distribution" ? (
-                        <EntityAnalysisComingUpPlaceholder block={block} />
+                      ) : block.type === "analysis_institution_bias" ? (
+                        <EntityInstitutionBiasBlock entityId={id} />
+                      ) : block.type === "analysis_rating_distribution" ? (
+                        <EntityRatingDistributionBlock entityId={id} />
                       ) : (
                         <EntityWorkspaceChartPlaceholder block={block} />
                       )}
@@ -1500,7 +1524,8 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                     key={inst.id}
                     type="button"
                     onClick={() => addRelatedInstrument(inst)}
-                    className="w-full rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+                    disabled={addRelatedBusy}
+                    className="w-full rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
                   >
                     {inst.symbol}
                     {inst.display_name ? ` · ${inst.display_name}` : ""}

@@ -21,19 +21,27 @@ export default function GroupPage() {
   const [ohlcv, setOhlcv] = useState<any | null>(null);
   const [articles, setArticles] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshingArticles, setRefreshingArticles] = useState(false);
+  const [savingSymbol, setSavingSymbol] = useState(false);
 
   useEffect(() => {
     (async () => {
+      setInitialLoading(true);
       try {
-        const g = await api.getGroup(groupId);
+        const [g, a, arts] = await Promise.all([
+          api.getGroup(groupId),
+          api.getGroupAsset(groupId),
+          api.groupArticles(groupId, 30),
+        ]);
         setGroup(g);
-        const a = await api.getGroupAsset(groupId);
         setAsset(a);
         setSymbolInput(a?.symbol || "");
-        const arts = await api.groupArticles(groupId, 30);
         setArticles(arts);
       } catch (e: any) {
         setError(e?.message || "Failed to load group");
+      } finally {
+        setInitialLoading(false);
       }
     })();
   }, [groupId]);
@@ -57,11 +65,14 @@ export default function GroupPage() {
 
   async function saveSymbol() {
     setError(null);
+    setSavingSymbol(true);
     try {
       const next = await api.setGroupAsset(groupId, { symbol: symbolInput.trim().toUpperCase(), provider: "stooq" });
       setAsset(next);
     } catch (e: any) {
       setError(e?.message || "Failed to save symbol");
+    } finally {
+      setSavingSymbol(false);
     }
   }
 
@@ -76,10 +87,13 @@ export default function GroupPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-xs text-slate-400">Keyword group</div>
-              <h1 className="text-lg font-semibold">{group?.name || "…"}</h1>
+              <h1 className="text-lg font-semibold">{group?.name || (initialLoading ? "Loading…" : "—")}</h1>
               <div className="mt-1 text-sm text-slate-300">
                 {group?.terms?.length ? group.terms.map((t: any) => t.term).join(", ") : "—"}
               </div>
+              <p className="mt-2 text-xs text-slate-500">
+                Newly added targets/groups may take up to a few hours before trend/history data is fully populated.
+              </p>
             </div>
             <Link href="/dashboard" className="text-sm text-indigo-300 hover:text-indigo-200">
               ← Back
@@ -131,8 +145,8 @@ export default function GroupPage() {
                   placeholder="NVDA"
                 />
               </label>
-              <button className="w-full rounded bg-indigo-600 px-3 py-2 text-sm font-medium hover:bg-indigo-500" onClick={saveSymbol}>
-                Save symbol
+              <button className="w-full rounded bg-indigo-600 px-3 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-60" onClick={saveSymbol} disabled={savingSymbol}>
+                {savingSymbol ? "Saving…" : "Save symbol"}
               </button>
               <div className="text-xs text-slate-400">Provider: Stooq (daily OHLCV, no API key).</div>
             </div>
@@ -144,9 +158,17 @@ export default function GroupPage() {
             <div className="text-sm font-semibold">Latest articles</div>
             <button
               className="rounded bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
-              onClick={async () => setArticles(await api.groupArticles(groupId, 30))}
+              disabled={refreshingArticles}
+              onClick={async () => {
+                setRefreshingArticles(true);
+                try {
+                  setArticles(await api.groupArticles(groupId, 30));
+                } finally {
+                  setRefreshingArticles(false);
+                }
+              }}
             >
-              Refresh
+              {refreshingArticles ? "Refreshing…" : "Refresh"}
             </button>
           </div>
           <div className="mt-3 space-y-3">

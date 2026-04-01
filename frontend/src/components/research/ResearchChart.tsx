@@ -1,6 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { EntityInstitutionBiasBlock } from "@/components/entity/EntityInstitutionBiasBlock";
+import { EntityRatingDistributionBlock } from "@/components/entity/EntityRatingDistributionBlock";
 
 const Research3DViewer = dynamic(
   () => import("./Research3DViewer").then((m) => ({ default: m.Research3DViewer })),
@@ -38,6 +40,7 @@ export const CHART_LABELS: Record<ChartType, string> = {
 export type ResearchChartProps = {
   type: ChartType;
   hasContext?: boolean;
+  entityId?: string | null;
   onRemove?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -51,17 +54,25 @@ function isComingUpType(t: ChartType): t is "institution_bias" | "rating_distrib
   return t === "institution_bias" || t === "rating_distribution";
 }
 
-export function ResearchChart({ type, hasContext = false, onRemove, onMoveUp, onMoveDown }: ResearchChartProps) {
+export function ResearchChart({ type, hasContext = false, entityId, onRemove, onMoveUp, onMoveDown }: ResearchChartProps) {
   if (isComingUpType(type)) {
     return (
       <div className="relative flex h-full min-h-[120px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
-        <span className="rounded bg-slate-700/60 px-2 py-1 text-xs font-medium text-slate-400">
-          Coming up
-        </span>
-        <p className="mt-2 text-sm text-slate-300">{CHART_LABELS[type]}</p>
-        <p className="mt-1 text-xs text-slate-500">
-          This block type will be available in a future update.
-        </p>
+        {hasContext && entityId ? (
+          <div className="w-full rounded-lg border border-slate-700 bg-slate-900/50">
+            {type === "institution_bias" ? (
+              <EntityInstitutionBiasBlock entityId={entityId} />
+            ) : (
+              <EntityRatingDistributionBlock entityId={entityId} />
+            )}
+          </div>
+        ) : (
+          <>
+            <span className="rounded bg-slate-700/60 px-2 py-1 text-xs font-medium text-slate-400">Needs entity target</span>
+            <p className="mt-2 text-sm text-slate-300">{CHART_LABELS[type]}</p>
+            <p className="mt-1 text-xs text-slate-500">Set an Entity in Research Universe to enable this block.</p>
+          </>
+        )}
         <div className="absolute right-2 top-2 flex gap-1">
           {onMoveUp && <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">↑</button>}
           {onMoveDown && <button type="button" onClick={onMoveDown} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move down">↓</button>}

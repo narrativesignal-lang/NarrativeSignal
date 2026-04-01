@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EntityDataLayout } from "@/components/entity/EntityDataLayout";
 import { EntityFeatureGuideModal } from "@/components/entity/EntityFeatureGuideModal";
@@ -35,6 +35,7 @@ export function DashboardClient() {
   const [entityGuideOpen, setEntityGuideOpen] = useState(false);
   const [macroMounted, setMacroMounted] = useState(activeTab === "macro");
   const [entityMounted, setEntityMounted] = useState(activeTab === "entity");
+  const shellPrefetchStartedRef = useRef(false);
 
   useEffect(() => {
     if (tabParam === "entity") setActiveTab("entity");
@@ -45,6 +46,53 @@ export function DashboardClient() {
     if (activeTab === "macro") setMacroMounted(true);
     if (activeTab === "entity") setEntityMounted(true);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (shellPrefetchStartedRef.current) return;
+    shellPrefetchStartedRef.current = true;
+
+    let cancelled = false;
+    let kickoffId: ReturnType<typeof setTimeout> | null = null;
+    let warmId: ReturnType<typeof setTimeout> | null = null;
+    let idleId: number | null = null;
+
+    const warmPageShells = () => {
+      if (cancelled) return;
+      // Shell/chunk warmup only. Keep real API fetching tied to page entry.
+      router.prefetch("/research");
+      router.prefetch("/reports");
+      router.prefetch("/schedules");
+      router.prefetch("/dashboard?tab=entity");
+
+      void import("@/app/research/page");
+      void import("@/app/reports/page");
+      void import("@/app/schedules/page");
+      void import("@/app/dashboard/entities/[id]/page");
+      void import("@/app/dashboard/entities/[id]/EntityDetailPageClient");
+    };
+
+    kickoffId = setTimeout(() => {
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        idleId = window.requestIdleCallback(
+          () => {
+            warmId = setTimeout(warmPageShells, 250);
+          },
+          { timeout: 3000 }
+        );
+      } else {
+        warmId = setTimeout(warmPageShells, 900);
+      }
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      if (kickoffId) clearTimeout(kickoffId);
+      if (warmId) clearTimeout(warmId);
+      if (idleId && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [router]);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selected, setSelected] = useState<Group | null>(null);

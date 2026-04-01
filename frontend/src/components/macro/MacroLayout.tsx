@@ -1,12 +1,12 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import type { MacroCategorySlug } from "@/lib/macroCategories";
 import { MACRO_CATEGORY_SLUGS } from "@/lib/macroCategories";
 import { api } from "@/lib/api";
-import { mockHeatmapForCategory } from "@/lib/macroMockData";
+import { heatmapCellsFromNewsItems, mapMacroNewsApiToItems } from "@/lib/macroNewsDerived";
 import { STALE_MACRO_NEWS_MS, STALE_MARKET_MS } from "@/lib/queryClient";
 import { IndexWatchlist } from "./IndexWatchlist";
 import { MacroSidebar } from "./MacroSidebar";
@@ -52,10 +52,26 @@ export function MacroLayout({ isActive = true }: MacroLayoutProps) {
     }
   }, [queryClient, isActive]);
 
+  const categoryNewsQ = useQuery({
+    queryKey: ["macro", "news", selectedCategory ?? "", NEWS_PRELOAD_LIMIT],
+    queryFn: () => api.macroNews(selectedCategory!, null, NEWS_PRELOAD_LIMIT),
+    enabled: Boolean(selectedCategory) && isActive,
+    staleTime: STALE_MACRO_NEWS_MS,
+    gcTime: 60 * 60 * 1000,
+  });
+
   const heatmapCells = useMemo(() => {
     if (!selectedCategory) return null;
-    return mockHeatmapForCategory(selectedCategory);
-  }, [selectedCategory]);
+    const rows = categoryNewsQ.data?.data;
+    if (rows && rows.length) {
+      const items = mapMacroNewsApiToItems(rows, selectedCategory);
+      return heatmapCellsFromNewsItems(selectedCategory, items);
+    }
+    if (categoryNewsQ.isSuccess) {
+      return heatmapCellsFromNewsItems(selectedCategory, []);
+    }
+    return [];
+  }, [selectedCategory, categoryNewsQ.data, categoryNewsQ.isSuccess]);
 
   return (
     <div className="flex flex-col gap-4 md:grid md:min-h-[70vh] md:grid-cols-[200px_1fr_280px] md:items-stretch">
@@ -82,7 +98,7 @@ export function MacroLayout({ isActive = true }: MacroLayoutProps) {
             categorySlug={selectedCategory}
             selectedSubcategory={heatmapFilter}
             onSelectSubcategory={setHeatmapFilter}
-            cells={heatmapCells}
+            cells={heatmapCells ?? []}
           />
         </div>
       </section>
@@ -97,7 +113,7 @@ export function MacroLayout({ isActive = true }: MacroLayoutProps) {
             categorySlug={selectedCategory}
             selectedSubcategory={heatmapFilter}
             onSelectSubcategory={setHeatmapFilter}
-            heatmapCells={heatmapCells}
+            heatmapCells={heatmapCells ?? []}
           />
         </div>
       </aside>

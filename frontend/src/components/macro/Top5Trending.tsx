@@ -4,7 +4,6 @@ import { useMemo } from "react";
 import { useI18n } from "@/lib/i18n";
 import type { MacroCategorySlug } from "@/lib/macroCategories";
 import type { HeatmapCell } from "@/lib/macroMockData";
-import { mockHeatmapForCategory } from "@/lib/macroMockData";
 
 type Props = {
   categorySlug: MacroCategorySlug | null;
@@ -22,12 +21,11 @@ export function Top5Trending({
 }: Props) {
   const { t } = useI18n();
   const top5 = useMemo(() => {
-    const cells =
-      heatmapCells ?? (categorySlug ? mockHeatmapForCategory(categorySlug) : []);
+    const cells = heatmapCells ?? [];
     return [...cells]
       .sort((a, b) => b.volume_24h - a.volume_24h)
       .slice(0, 5);
-  }, [categorySlug, heatmapCells]);
+  }, [heatmapCells]);
 
   if (!categorySlug) {
     return (

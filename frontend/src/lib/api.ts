@@ -118,8 +118,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const doFetch = async () =>
     fetch(`${API_BASE}${path}`, {
-      credentials: "include",
       ...init,
+      // Always include cookies for admin/session routes. Do NOT allow init to override this.
+      credentials: "include",
       headers
     });
 
@@ -229,6 +230,39 @@ export const api = {
       `/api/admin/users/${userId}`,
       { method: "PATCH", body: JSON.stringify(payload) }
     ),
+  listRuntimeFlags: () =>
+    request<Array<{ key: string; value_bool: boolean; updated_at: string | null; updated_by: string | null }>>(
+      "/api/admin/runtime-flags",
+      { credentials: "include" }
+    ),
+  patchRuntimeFlag: (key: string, payload: { value_bool: boolean }) =>
+    request<{ key: string; value_bool: boolean; updated_at: string | null; updated_by: string | null }>(
+      `/api/admin/runtime-flags/${encodeURIComponent(key)}`,
+      { method: "PATCH", body: JSON.stringify(payload), credentials: "include" }
+    ),
+  listRuntimeLogs: (params?: { limit?: number; category?: string; min_level?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    if (params?.category) q.set("category", params.category);
+    if (params?.min_level) q.set("min_level", params.min_level);
+    const qs = q.toString();
+    return request<
+      Array<{
+        created_at: string;
+        level: string;
+        category: string;
+        job_name: string | null;
+        provider: string | null;
+        status: string | null;
+        message: string;
+        disabled_by_runtime_flag: boolean;
+        no_provider_call: boolean;
+        request_count: number | null;
+        fallback_count: number | null;
+        symbol_count: number | null;
+      }>
+    >(`/api/admin/runtime-logs${qs ? `?${qs}` : ""}`, { credentials: "include" });
+  },
   me: () =>
     request<{
       id: string;
@@ -435,6 +469,35 @@ export const api = {
       stale?: boolean;
     }>(`/api/entities/${entityId}/trending`),
 
+  getEntityInstitutionBias: (entityId: string) =>
+    request<{
+      bias_label: string;
+      score: number;
+      bullish_pct: number;
+      neutral_pct: number;
+      bearish_pct: number;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
+      stale?: boolean;
+    }>(`/api/entities/${entityId}/analysis/institution-bias`),
+
+  getEntityRatingDistribution: (entityId: string) =>
+    request<{
+      buy_pct: number;
+      hold_pct: number;
+      sell_pct: number;
+      confidence: number;
+      data_source?: string;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale";
+      message?: string | null;
+      data_updated_at?: string | null;
+      last_updated_at?: string | null;
+      stale?: boolean;
+    }>(`/api/entities/${entityId}/analysis/rating-distribution`),
+
   getEntityPriceTimelinePoints: (
     entityId: string,
     params: { symbol: string; period: string; chart_scope: string }
@@ -481,6 +544,8 @@ export const api = {
         category: string;
       }>;
       data_mode: "placeholder" | "live";
+      news_status?: "has_items" | "no_relevant_news" | "fetch_failed";
+      status_message?: string | null;
     }>(
       `/api/entities/${entityId}/price-timeline/window?point_id=${encodeURIComponent(pointId)}`
     ),
@@ -528,6 +593,18 @@ export const api = {
       range: string;
       points: Array<{ date: string; value: number }>;
     }>(`/api/entities/${entityId}/metric-series/${encodeURIComponent(metric)}?range=${encodeURIComponent(range ?? "3m")}`),
+
+  getEntityTripleSignalSeries: (entityId: string, period?: string) =>
+    request<{
+      period: string;
+      axis: string[];
+      trading_activity: Array<number | null>;
+      news_volume: Array<number | null>;
+      search_volume: Array<number | null>;
+      last_updated_at?: string | null;
+      data_source?: string;
+      stale?: boolean;
+    }>(`/api/entities/${entityId}/triple-signal-series?period=${encodeURIComponent(period ?? "3M")}`),
 
   searchInstruments: (q: string, assetClass?: string, exchange?: string, category?: string) =>
     request<
@@ -587,7 +664,7 @@ export const api = {
   },
 
   aiKeywordSuggestions: (p: { idea: string; instrument?: string | null; asset_class?: string | null; portfolio?: string | null }) =>
-    request<{ keywords: string[] }>("/api/ai/keyword-suggestions", { method: "POST", body: JSON.stringify(p) }),
+    request<{ keywords: string[]; ok?: boolean; disabled?: boolean; reason?: string }>("/api/ai/keyword-suggestions", { method: "POST", body: JSON.stringify(p) }),
 
   series: (groupId: string, hours = 72) => request<{ group_id: string; points: any[] }>(`/api/indices/series/${groupId}?hours=${hours}`),
 

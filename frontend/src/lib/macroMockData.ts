@@ -43,7 +43,9 @@ export type HeatmapCell = {
   name: string;
   volume_24h: number;
   volume_prev_24h: number;
-  delta: number; // (current - prev) / prev
+  delta: number; // (current - prev) / prev, or neutral 0 for API-derived count grids
+  /** When set, shown instead of a synthetic % change (honest for news-count heatmaps). */
+  footerLabel?: string;
 };
 
 const SOURCES = ["Reuters", "Bloomberg", "CNBC", "FT", "WSJ", "MarketWatch", "CoinDesk"];

@@ -6,7 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api, parseApiError } from "@/lib/api";
 import type { MacroCategorySlug } from "@/lib/macroCategories";
 import { STALE_MACRO_NEWS_MS } from "@/lib/queryClient";
-import { mockNewsForCategory, type NewsItem } from "@/lib/macroMockData";
+import type { NewsItem } from "@/lib/macroMockData";
+import { mapMacroNewsApiToItems } from "@/lib/macroNewsDerived";
 import { SlowLoadBanner, useSlowLoadVisible } from "@/components/SlowLoadBanner";
 import { writeMacroNewsArticleToSession } from "@/lib/macroNewsDetailCache";
 import { cleanMacroNewsTitle, htmlToPlainText } from "@/lib/plainText";
@@ -37,33 +38,6 @@ function writeRawToStorage(category: string, items: NewsItem[]) {
   } catch {
     /* quota */
   }
-}
-
-function mapApiToNewsItems(
-  data: Awaited<ReturnType<typeof api.macroNews>>["data"] | undefined,
-  categorySlug: MacroCategorySlug
-): NewsItem[] {
-  return (data || []).map((e) => {
-    const tierRaw = e.publisher_tier;
-    const publisher_tier: 1 | 2 | 3 = tierRaw === 1 || tierRaw === 2 ? tierRaw : 3;
-    return {
-      id: e.id,
-      title: e.title,
-      source: e.source ?? "—",
-      timestamp: e.timestamp ?? new Date().toISOString(),
-      category: e.category ?? categorySlug,
-      subcategory: e.subcategory ?? "General",
-      url: e.url,
-      summary: e.summary,
-      sentiment: e.sentiment ?? null,
-      impact: e.impact ?? null,
-      publisher_tier,
-      publisher_normalized: e.publisher_normalized ?? null,
-      duplicate_count:
-        typeof e.duplicate_count === "number" && e.duplicate_count >= 1 ? e.duplicate_count : 1,
-      related_publishers: Array.isArray(e.related_publishers) ? e.related_publishers.slice(0, 5) : [],
-    };
-  });
 }
 
 function compareNewsItems(a: NewsItem, b: NewsItem): number {
@@ -287,7 +261,7 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
 
   useEffect(() => {
     if (q.isSuccess && q.data?.data?.length && categorySlug) {
-      const mapped = mapApiToNewsItems(q.data.data, categorySlug);
+      const mapped = mapMacroNewsApiToItems(q.data.data, categorySlug);
       writeRawToStorage(categorySlug, mapped);
     }
   }, [q.isSuccess, q.data, categorySlug]);
@@ -295,15 +269,12 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
   const rawItems = useMemo(() => {
     if (!categorySlug) return [];
     if (q.isSuccess && q.data?.data) {
-      return mapApiToNewsItems(q.data.data, categorySlug);
+      return mapMacroNewsApiToItems(q.data.data, categorySlug);
     }
     const cached = readRawFromStorage(categorySlug);
     if (cached?.length) return cached;
-    if (q.isError) {
-      return mockNewsForCategory(categorySlug, subcategoryFilter, NEWS_LIMIT);
-    }
     return [];
-  }, [categorySlug, q.isSuccess, q.data, q.isError, subcategoryFilter]);
+  }, [categorySlug, q.isSuccess, q.data]);
 
   const displayedItems = useMemo(() => {
     let list = rawItems;
@@ -365,7 +336,7 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
       ) : null}
       {q.isError && error ? (
         <div className="mb-2 rounded border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
-          {error} Sample articles are shown below.
+          {error} No sample headlines are shown—try again or check cached news if available.
         </div>
       ) : null}
       {loading && displayedItems.length > 0 ? (
