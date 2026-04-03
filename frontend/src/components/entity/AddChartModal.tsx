@@ -4,12 +4,12 @@ type SkillCategory = "index" | "analysis" | "ai_analysis";
 
 const ENTITY_SKILLS = [
   // Index: direct data indicators
-  { id: "search_volume", label: "Search Trend Index", category: "index" as SkillCategory },
+  { id: "search_volume", label: "Target Search Volume", category: "index" as SkillCategory },
   { id: "coverage_volume", label: "Coverage Volume", category: "index" as SkillCategory },
-  { id: "sentiment_score", label: "Sentiment", category: "index" as SkillCategory },
+  { id: "sentiment_score", label: "Narrative sentiment score", category: "index" as SkillCategory },
   // Analysis: derived metrics from one or more indicators
-  { id: "search_momentum", label: "Search Momentum", category: "analysis" as SkillCategory },
-  { id: "search_acceleration", label: "Search Acceleration", category: "analysis" as SkillCategory },
+  { id: "search_momentum", label: "Target Search Momentum", category: "analysis" as SkillCategory },
+  { id: "search_acceleration", label: "Target Search Acceleration", category: "analysis" as SkillCategory },
   { id: "coverage_momentum", label: "Coverage Momentum", category: "analysis" as SkillCategory },
   { id: "quadrant_flow", label: "Narrative Flow", category: "analysis" as SkillCategory },
   // AI Analysis: scaffold for future AI-powered blocks

@@ -66,25 +66,43 @@ export const ENTITY_OVERLAY_SERIES_META: Record<
     description: "Instrument close from cached OHLCV, normalized for shape — not dollar scale.",
   },
   target_search_volume: {
-    label: "Target search volume",
-    description: "Ticker-intent search index for the entity period.",
+    label: "Target Search Volume",
+    description: "Ticker-intent search index for the entity period (raw series).",
   },
   keywords_search_volume: {
-    label: "Keywords search volume",
-    description: "Narrative keyword search aggregate for the entity period.",
+    label: "Keyword Search Volume",
+    description: "Narrative keyword search aggregate for the entity period (raw series).",
   },
   coverage_volume: {
-    label: "Coverage volume",
-    description: "News coverage volume for the entity period.",
+    label: "Coverage Volume",
+    description: "News coverage volume for the entity period (raw series).",
   },
   triple_signal: {
     label: "Triple signal (3 lines)",
-    description: "Trading activity, news volume, and keywords search (each normalized 0–100 in source API).",
+    description: "Trading activity, coverage volume, and keyword search index (each normalized 0–100 in source API).",
   },
 };
 
 export function isEntityOverlaySeriesKey(s: string): s is EntityOverlaySeriesKey {
   return (ENTITY_OVERLAY_SERIES_ORDER as readonly string[]).includes(s);
+}
+
+const ENTITY_OVERLAY_LABEL_I18N: Record<EntityOverlaySeriesKey, string> = {
+  price_close: "workspace.overlayPriceClose",
+  target_search_volume: "workspace.targetSearchVolume",
+  keywords_search_volume: "workspace.keywordSearchVolume",
+  coverage_volume: "workspace.coverageVolume",
+  triple_signal: "workspace.overlayTripleSignalTitle",
+};
+
+/** User-facing overlay picker / legend label (i18n with English fallback from `ENTITY_OVERLAY_SERIES_META`). */
+export function entityOverlaySeriesLabel(
+  t: (key: string) => string,
+  key: EntityOverlaySeriesKey
+): string {
+  const i18nKey = ENTITY_OVERLAY_LABEL_I18N[key];
+  const v = t(i18nKey);
+  return v !== i18nKey ? v : ENTITY_OVERLAY_SERIES_META[key].label;
 }
 
 function sortOverlayKeys(keys: Iterable<string>): string[] {
@@ -215,21 +233,21 @@ export const ANALYSIS_TYPES: WorkspaceChartType[] = [
 
 export const WORKSPACE_CHART_LABELS: Record<string, string> = {
   technical: "Technical",
-  sentiment: "Sentiment",
+  sentiment: "Narrative sentiment score",
   quadrant: "Narrative quadrant",
   "3d": "3D",
   overlay_technical: "Price & indicators",
-  overlay_sentiment: "Sentiment series",
+  overlay_sentiment: "AI sentiment overlay",
   split_technical: "Technical (stacked)",
-  split_sentiment: "Sentiment (stacked)",
-  series_target_search_volume: "Target search volume",
-  series_keywords_search_volume: "Keywords search volume",
-  series_coverage_volume: "Coverage volume",
+  split_sentiment: "Sentiment score (stacked)",
+  series_target_search_volume: "Target Search Volume",
+  series_keywords_search_volume: "Keyword Search Volume",
+  series_coverage_volume: "Coverage Volume",
   series_triple_signal: "Triple signal",
-  metric_momentum_target: "Target momentum",
-  metric_acceleration_target: "Target acceleration",
-  metric_momentum_keywords: "Keywords momentum",
-  metric_acceleration_keywords: "Keywords acceleration",
+  metric_momentum_target: "Target Search Momentum",
+  metric_acceleration_target: "Target Search Acceleration",
+  metric_momentum_keywords: "Keyword Search Momentum",
+  metric_acceleration_keywords: "Keyword Search Acceleration",
   analysis_3d: "3D narrative space",
   analysis_institution_bias: "Institution bias",
   analysis_rating_distribution: "Rating distribution",
@@ -237,21 +255,21 @@ export const WORKSPACE_CHART_LABELS: Record<string, string> = {
 
 export const WORKSPACE_CHART_DESCRIPTIONS: Record<string, string> = {
   technical: "Price, volume, and technical indicators.",
-  sentiment: "Narrative and sentiment time series.",
-  quadrant: "Narrative keywords search vs coverage quadrant.",
+  sentiment: "Narrative sentiment score time series (not keyword search volume).",
+  quadrant: "Keyword search volume vs coverage volume quadrant.",
   "3d": "Search trend vs coverage over time (3D path).",
   overlay_technical: "Multiple compatible series on the same plot.",
-  overlay_sentiment: "Multiple sentiment series overlaid.",
+  overlay_sentiment: "AI-derived sentiment from news (server pipeline).",
   split_technical: "Stacked vertically with shared time axis.",
-  split_sentiment: "Stacked sentiment charts, shared timeline.",
+  split_sentiment: "Stacked sentiment score charts, shared timeline.",
   series_target_search_volume: "Google Trends index for the primary instrument symbol (ticker intent), one keyword.",
   series_keywords_search_volume: "Sum of independent narrative keyword Trends series (not mixed with ticker).",
-  series_coverage_volume: "Daily coverage-volume time series from entity metrics.",
-  series_triple_signal: "Three normalized lines (trading, news, narrative keywords search index).",
-  metric_momentum_target: "Day-over-day change in target (ticker) search volume.",
-  metric_acceleration_target: "Second difference of target search volume.",
-  metric_momentum_keywords: "Day-over-day change in narrative keywords search aggregate.",
-  metric_acceleration_keywords: "Second difference of keywords search aggregate.",
+  series_coverage_volume: "Daily coverage volume time series from entity metrics.",
+  series_triple_signal: "Three normalized lines: trading activity, coverage volume, keyword search index.",
+  metric_momentum_target: "Day-over-day change in target (ticker) search volume (derived).",
+  metric_acceleration_target: "Second difference of target search volume (derived).",
+  metric_momentum_keywords: "Day-over-day change in keyword search aggregate (derived).",
+  metric_acceleration_keywords: "Second difference of keyword search aggregate (derived).",
   analysis_3d: "3D narrative space — keywords search vs coverage.",
   analysis_institution_bias: "Institutional stance category shares (bullish / neutral / bearish).",
   analysis_rating_distribution: "Analyst rating category percentages (distribution).",
@@ -259,21 +277,21 @@ export const WORKSPACE_CHART_DESCRIPTIONS: Record<string, string> = {
 
 export const WORKSPACE_CHART_DEFAULT_TITLES: Record<string, string> = {
   technical: "Technical",
-  sentiment: "Sentiment",
+  sentiment: "Narrative sentiment score",
   quadrant: "Quadrant",
   "3d": "Narrative 3D",
   overlay_technical: "Overlay — Technical",
-  overlay_sentiment: "Overlay — Sentiment",
+  overlay_sentiment: "Overlay — AI sentiment",
   split_technical: "Split — Technical",
-  split_sentiment: "Split — Sentiment",
-  series_target_search_volume: "Target search volume",
-  series_keywords_search_volume: "Keywords search volume",
-  series_coverage_volume: "Coverage volume",
+  split_sentiment: "Split — Sentiment score",
+  series_target_search_volume: "Target Search Volume",
+  series_keywords_search_volume: "Keyword Search Volume",
+  series_coverage_volume: "Coverage Volume",
   series_triple_signal: "Triple signal",
-  metric_momentum_target: "Target momentum",
-  metric_acceleration_target: "Target acceleration",
-  metric_momentum_keywords: "Keywords momentum",
-  metric_acceleration_keywords: "Keywords acceleration",
+  metric_momentum_target: "Target Search Momentum",
+  metric_acceleration_target: "Target Search Acceleration",
+  metric_momentum_keywords: "Keyword Search Momentum",
+  metric_acceleration_keywords: "Keyword Search Acceleration",
   analysis_3d: "3D Narrative Space",
   analysis_institution_bias: "Institution Bias",
   analysis_rating_distribution: "Rating Distribution",

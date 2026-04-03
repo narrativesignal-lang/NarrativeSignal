@@ -28,10 +28,10 @@ function sampleForDisplay(points: QuadrantPoint[], maxPoints: number): QuadrantP
 
 /** Label placement in axis space: x = cx0 + ox·halfW, y = cy0 − oy·halfH (oy>0 is upper half of chart). */
 const QUADRANT_CORNER_LABELS: { ox: number; oy: number; label: string }[] = [
-  { ox: 0.62, oy: 0.62, label: "Coverage above avg · Search above avg" },
-  { ox: -0.62, oy: 0.62, label: "Coverage below avg · Search above avg" },
-  { ox: -0.62, oy: -0.62, label: "Coverage below avg · Search below avg" },
-  { ox: 0.62, oy: -0.62, label: "Coverage above avg · Search below avg" },
+  { ox: 0.62, oy: 0.62, label: "Coverage above avg · Keyword search volume above avg" },
+  { ox: -0.62, oy: 0.62, label: "Coverage below avg · Keyword search volume above avg" },
+  { ox: -0.62, oy: -0.62, label: "Coverage below avg · Keyword search volume below avg" },
+  { ox: 0.62, oy: -0.62, label: "Coverage above avg · Keyword search volume below avg" },
 ];
 
 export function QuadrantChart({
@@ -154,7 +154,7 @@ export function QuadrantChart({
         width={width}
         height={height}
         className="max-h-[85vh] max-w-full shrink-0"
-        aria-label="Quadrant chart: coverage vs search deviation from mean"
+        aria-label="Quadrant chart: coverage volume vs keyword search volume deviation from mean"
       >
         <line
           x1={PADDING.left}
@@ -234,7 +234,7 @@ export function QuadrantChart({
           className="fill-slate-400"
           style={{ fontSize: 10 }}
         >
-          Coverage Δ vs period mean
+          Coverage Volume Δ vs period mean
         </text>
         <text
           x={14}
@@ -244,7 +244,7 @@ export function QuadrantChart({
           style={{ fontSize: 10 }}
           transform={`rotate(-90, 14, ${cy0})`}
         >
-          Keywords search Δ vs period mean
+          Keyword Search Volume Δ vs period mean
         </text>
       </svg>
     </div>

@@ -1,5 +1,10 @@
 import { CHART_TYPES as RESEARCH_CHART_TYPES, type ChartType } from "./ResearchChart";
 
+/**
+ * Persisted `ChartType` keys stay stable (`momentum`, `sentiment`, …).
+ * User-facing labels are in `ResearchChart` / i18n (`Target Search Volume`, `Keyword Search Volume`, …).
+ */
+
 /** Research Universe / Scope for one tab: multiple instruments, terms, entity. */
 export type TabSetup = {
   tab_title?: string;

@@ -121,7 +121,7 @@ describe("ResearchWorkspace Add Block flow (modal)", () => {
     const dialog = openAddBlockModal();
 
     fireEvent.click(within(dialog).getByRole("button", { name: /split chart/i }));
-    fireEvent.click(within(dialog).getByRole("button", { name: /^sentiment$/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Keyword Search Volume$/i }));
     fireEvent.click(within(dialog).getByRole("button", { name: /^add$/i }));
 
     expect(updateMock).toHaveBeenCalledWith(

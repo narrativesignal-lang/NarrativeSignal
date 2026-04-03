@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import { ComparisonChart } from "@/components/ComparisonChart";
 import { BlockStateMessage } from "@/components/BlockStateMessage";
 
@@ -14,6 +15,11 @@ export function EntitySplitSentimentChart({
   period?: string;
   height?: number;
 }) {
+  const { t } = useI18n();
+  const scoreLabel =
+    t("workspace.narrativeSentimentScore") !== "workspace.narrativeSentimentScore"
+      ? t("workspace.narrativeSentimentScore")
+      : "Narrative sentiment score";
   const [series, setSeries] = useState<Array<{ symbol: string; points: Array<{ t: string; value: number }> }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,9 +29,13 @@ export function EntitySplitSentimentChart({
     setError(null);
     try {
       const res = await api.getEntitySentimentSeries(entityId, period);
+      const label =
+        t("workspace.narrativeSentimentScore") !== "workspace.narrativeSentimentScore"
+          ? t("workspace.narrativeSentimentScore")
+          : "Narrative sentiment score";
       setSeries([
         {
-          symbol: "Sentiment",
+          symbol: label,
           points: res.points.map((p) => ({ t: p.t, value: p.sentiment_score })),
         },
       ]);
@@ -35,7 +45,7 @@ export function EntitySplitSentimentChart({
     } finally {
       setLoading(false);
     }
-  }, [entityId, period]);
+  }, [entityId, period, t]);
 
   useEffect(() => {
     load();
@@ -57,7 +67,7 @@ export function EntitySplitSentimentChart({
   return (
     <div className="flex flex-col gap-2">
       <div className="rounded border border-slate-700/60 bg-slate-900/30 p-2">
-        <div className="mb-1 text-xs font-medium text-slate-400">Sentiment</div>
+        <div className="mb-1 text-xs font-medium text-slate-400">{scoreLabel}</div>
         <ComparisonChart series={series} height={height} />
       </div>
     </div>

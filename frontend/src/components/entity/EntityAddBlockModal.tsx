@@ -6,6 +6,7 @@ import {
   ENTITY_CLASSIC_ANALYSIS_TAB_TYPES,
   ENTITY_OVERLAY_SERIES_META,
   ENTITY_OVERLAY_SERIES_ORDER,
+  entityOverlaySeriesLabel,
   ENTITY_WORKSPACE_IMPLEMENTED_TYPES,
   ENTITY_SPLIT_TAB_TYPES,
   getExistingOverlaySeriesKeys,
@@ -13,6 +14,7 @@ import {
   WORKSPACE_BLOCK_AI_COST,
   WORKSPACE_CHART_DESCRIPTIONS,
   WORKSPACE_CHART_LABELS,
+  type EntityOverlaySeriesKey,
   type WorkspaceChartBlock,
   type WorkspaceChartType,
 } from "@/lib/entityWorkspaceCharts";
@@ -366,7 +368,9 @@ export function EntityAddBlockModal({
               ) : (
                 <ul className="space-y-2">
                   {overlayKeysOrdered.map((key) => {
-                    const meta = ENTITY_OVERLAY_SERIES_META[key];
+                    const overlayKey = key as EntityOverlaySeriesKey;
+                    const meta = ENTITY_OVERLAY_SERIES_META[overlayKey];
+                    const seriesTitle = entityOverlaySeriesLabel(t, overlayKey);
                     const already = existingOverlayKeys.has(key);
                     const checked = overlaySelected.has(key) || already;
                     return (
@@ -384,10 +388,10 @@ export function EntityAddBlockModal({
                             checked={checked}
                             disabled={already || saving}
                             onChange={() => toggleOverlayKey(key)}
-                            aria-label={meta.label}
+                            aria-label={seriesTitle}
                           />
                           <span>
-                            <span className="font-medium">{meta.label}</span>
+                            <span className="font-medium">{seriesTitle}</span>
                             <span className="mt-0.5 block text-xs text-slate-400">{meta.description}</span>
                             {already ? (
                               <span className="mt-1 block text-[10px] text-slate-500">

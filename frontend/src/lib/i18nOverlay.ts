@@ -36,7 +36,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
       "Define instruments, optional target link, terms, and timeframe for this tab. Charts in the workspace use this context.",
     "help.workspaceBlocksTitle": "Workspace blocks",
     "help.workspaceBlocksBody":
-      "Add blocks to compare price, sentiment, or analysis views. Layout is saved per target project in Cross Comparison.",
+      "Add blocks to compare price, search volume, coverage, or analysis views. Layout is saved per target project in Cross Comparison.",
     "help.communityIntroTitle": "Skills Community",
     "help.communityIntroBody":
       "Share ideas for tools, indicators, and workflows built on platform data. Submissions are reviewed; library cards are previews.",
@@ -378,7 +378,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
       "为本标签配置标的、可选关联目标、词条与时间范围。工作区图表会读取这些设置。",
     "help.workspaceBlocksTitle": "工作区区块",
     "help.workspaceBlocksBody":
-      "添加区块以对比价格、情绪或分析视图。在交叉对比中按项目保存布局。",
+      "添加区块以对比价格、搜索量、覆盖量或分析视图。在交叉对比中按项目保存布局。",
     "help.communityIntroTitle": "技能社区",
     "help.communityIntroBody":
       "基于平台数据分享工具、指标与工作流构想。提交需审核；库中为示例预览。",
@@ -702,7 +702,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
       "Instrumentos, alvo opcional, términos y marco temporal para esta pestaña.",
     "help.workspaceBlocksTitle": "Bloques del espacio",
     "help.workspaceBlocksBody":
-      "Añade bloques para comparar precio, sentimiento o análisis.",
+      "Añade bloques para comparar precio, volumen de búsqueda, cobertura o análisis.",
     "help.communityIntroTitle": "Comunidad de habilidades",
     "help.communityIntroBody":
       "Explora herramientas y envía ideas. Las tarjetas son vista previa.",
@@ -988,7 +988,7 @@ export const i18nOverlay: Record<Locale, Record<string, string>> = {
       "Instrumentos, alvo opcional, termos e período para este separador.",
     "help.workspaceBlocksTitle": "Blocos do espaço",
     "help.workspaceBlocksBody":
-      "Adicione blocos para comparar preço, sentimento ou análise.",
+      "Adicione blocos para comparar preço, volume de busca, cobertura ou análise.",
     "help.communityIntroTitle": "Comunidade de competências",
     "help.communityIntroBody":
       "Explore ferramentas e envie ideias. Cartões são pré-visualização.",

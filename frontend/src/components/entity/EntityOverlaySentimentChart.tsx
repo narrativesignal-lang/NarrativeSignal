@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import { ComparisonChart } from "@/components/ComparisonChart";
 import { BlockStateMessage } from "@/components/BlockStateMessage";
 
@@ -14,6 +15,7 @@ export function EntityOverlaySentimentChart({
   period?: string;
   height?: number;
 }) {
+  const { t } = useI18n();
   const [series, setSeries] = useState<Array<{ symbol: string; points: Array<{ t: string; value: number }> }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +34,11 @@ export function EntityOverlaySentimentChart({
     try {
       const res = await api.getEntitySentimentSeries(entityId, period);
       const pts = res.points.map((p) => ({ t: p.t, value: p.sentiment_score }));
-      setSeries([{ symbol: "Sentiment", points: pts }]);
+      const label =
+        t("workspace.narrativeSentimentScore") !== "workspace.narrativeSentimentScore"
+          ? t("workspace.narrativeSentimentScore")
+          : "Narrative sentiment score";
+      setSeries([{ symbol: label, points: pts }]);
       const anyRes = res as any;
       const eta = typeof anyRes?.eta_hint === "string" ? anyRes.eta_hint : null;
       if (eta && typeof eta === "string") {
@@ -61,7 +67,7 @@ export function EntityOverlaySentimentChart({
     } finally {
       setLoading(false);
     }
-  }, [entityId, period]);
+  }, [entityId, period, t]);
 
   useEffect(() => {
     load();

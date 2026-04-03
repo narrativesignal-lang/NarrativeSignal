@@ -30,6 +30,7 @@ export const RESEARCH_ANALYSIS_CHART_TYPES: ChartType[] = [
 
 /**
  * Map research chart types to entity workspace overlay series keys (EntityMathOverlayChart).
+ * UI labels: `momentum` → Target Search Volume, `sentiment` → Keyword Search Volume, `coverage` → Coverage Volume.
  * Split-chart blocks use the same entity APIs: `coverage` → `getEntityCoverageVolumeSeries`, etc.
  */
 export const RESEARCH_OVERLAY_TYPE_TO_ENTITY_KEY: Partial<Record<ChartType, string>> = {

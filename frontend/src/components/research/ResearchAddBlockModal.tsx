@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { useI18n } from "@/lib/i18n";
-import { CHART_LABELS, type ChartType } from "./ResearchChart";
+import { researchChartTypeLabel, type ChartType } from "./ResearchChart";
 import {
   RESEARCH_ANALYSIS_CHART_TYPES,
   RESEARCH_OVERLAY_CHART_TYPES,
@@ -154,9 +154,9 @@ export function ResearchAddBlockModal({
                       disabled={!hasResearchTarget}
                       checked={overlaySelected.has(chartType)}
                       onChange={() => hasResearchTarget && toggleOverlay(chartType)}
-                      aria-label={CHART_LABELS[chartType]}
+                      aria-label={researchChartTypeLabel(t, chartType)}
                     />
-                    <span className="font-medium">{CHART_LABELS[chartType]}</span>
+                    <span className="font-medium">{researchChartTypeLabel(t, chartType)}</span>
                   </label>
                 </li>
               ))
@@ -181,7 +181,7 @@ export function ResearchAddBlockModal({
                           : "border-slate-600 bg-slate-800/60 text-slate-300 hover:border-slate-500 hover:bg-slate-800"
                     }`}
                   >
-                    {CHART_LABELS[chartType]}
+                    {researchChartTypeLabel(t, chartType)}
                   </button>
                 </li>
               ))
@@ -205,7 +205,7 @@ export function ResearchAddBlockModal({
                         : "border-slate-600 bg-slate-800/60 text-slate-300 hover:border-slate-500 hover:bg-slate-800"
                   }`}
                 >
-                  {CHART_LABELS[chartType]}
+                  {researchChartTypeLabel(t, chartType)}
                 </button>
               </li>
             ))

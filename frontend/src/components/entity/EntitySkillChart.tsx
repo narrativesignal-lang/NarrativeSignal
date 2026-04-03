@@ -1,12 +1,12 @@
 "use client";
 
 const LABELS: Record<string, string> = {
-  search_volume: "Search Trend Index",
-  search_momentum: "Search Momentum",
-  search_acceleration: "Search Acceleration",
+  search_volume: "Target Search Volume",
+  search_momentum: "Target Search Momentum",
+  search_acceleration: "Target Search Acceleration",
   coverage_volume: "Coverage Volume",
   coverage_momentum: "Coverage Momentum",
-  sentiment_score: "Sentiment Score",
+  sentiment_score: "Narrative sentiment score",
   quadrant_flow: "Narrative Flow",
 };
 

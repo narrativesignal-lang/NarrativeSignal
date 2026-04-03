@@ -7,8 +7,8 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 type Variant = "narrative" | "derivative";
 
 const AXES_LABELS: Record<Variant, { x: string; y: string; z: string }> = {
-  narrative: { x: "Search Volume", y: "Coverage Volume", z: "Time" },
-  derivative: { x: "Search Momentum", y: "Coverage Momentum", z: "Market Confirmation" },
+  narrative: { x: "Keyword Search Volume", y: "Coverage Volume", z: "Time" },
+  derivative: { x: "Keyword Search Momentum", y: "Coverage Momentum", z: "Market Confirmation" },
 };
 
 const DEFAULT_CAMERA_POSITION = { x: 2, y: 1.5, z: 2 };

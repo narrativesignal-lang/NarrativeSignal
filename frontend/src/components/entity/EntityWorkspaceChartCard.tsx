@@ -39,7 +39,10 @@ export function EntityWorkspaceChartCard({
 }) {
   const { t } = useI18n();
   const { user } = useUser();
-  const typeLabel = WORKSPACE_CHART_LABELS[block.type] ?? block.type;
+  const ecKey = `workspace.ec.${block.type}`;
+  const typeLabelI18n = t(ecKey);
+  const typeLabel =
+    typeLabelI18n !== ecKey ? typeLabelI18n : (WORKSPACE_CHART_LABELS[block.type] ?? block.type);
   const chartTitle = getWorkspaceChartDisplayTitle(block);
   const aiCost = WORKSPACE_BLOCK_AI_COST[block.type as WorkspaceChartType] ?? "none";
   const showAi = aiCost !== "none";
@@ -86,7 +89,9 @@ export function EntityWorkspaceChartCard({
 
 export function EntityWorkspaceChartPlaceholder({ block }: { block: WorkspaceChartBlock }) {
   const { t } = useI18n();
-  const label = WORKSPACE_CHART_LABELS[block.type] ?? block.type;
+  const ecKey = `workspace.ec.${block.type}`;
+  const labelI18n = t(ecKey);
+  const label = labelI18n !== ecKey ? labelI18n : (WORKSPACE_CHART_LABELS[block.type] ?? block.type);
   return (
     <div className="flex h-full min-h-[140px] flex-col justify-between rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-3">
       <div>
@@ -107,7 +112,9 @@ export function EntityWorkspaceChartPlaceholder({ block }: { block: WorkspaceCha
 /** Placeholder for analysis blocks marked "Coming up" (institution bias, rating distribution). */
 export function EntityAnalysisComingUpPlaceholder({ block }: { block: WorkspaceChartBlock }) {
   const { t } = useI18n();
-  const label = WORKSPACE_CHART_LABELS[block.type] ?? block.type;
+  const ecKey = `workspace.ec.${block.type}`;
+  const labelI18n = t(ecKey);
+  const label = labelI18n !== ecKey ? labelI18n : (WORKSPACE_CHART_LABELS[block.type] ?? block.type);
   return (
     <div className="flex h-full min-h-[140px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
       <span className="rounded bg-slate-700/60 px-2 py-1 text-xs font-medium text-slate-400">

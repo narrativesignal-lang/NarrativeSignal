@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useI18n } from "@/lib/i18n";
 import { EntityInstitutionBiasBlock } from "@/components/entity/EntityInstitutionBiasBlock";
 import { EntityRatingDistributionBlock } from "@/components/entity/EntityRatingDistributionBlock";
 import { EntitySeriesVolumeBlock } from "@/components/entity/EntitySeriesVolumeBlock";
@@ -26,18 +27,41 @@ export const CHART_TYPES = [
 
 export type ChartType = (typeof CHART_TYPES)[number];
 
+/** i18n keys for display labels; fall back to `CHART_LABELS` when `t(key) === key`. */
+export const RESEARCH_CHART_LABEL_KEYS: Record<ChartType, string> = {
+  asset_price: "research.chartAssetPrice",
+  sentiment: "workspace.keywordSearchVolume",
+  momentum: "workspace.targetSearchVolume",
+  coverage: "workspace.coverageVolume",
+  custom_index: "research.chartCustomKeywordComposite",
+  three_d: "research.chart3D",
+  three_d_narrative: "research.chart3DNarrativeSpace",
+  three_d_derivative: "research.chart3DDerivativeSpace",
+  institution_bias: "research.chartInstitutionBias",
+  rating_distribution: "research.chartRatingDistribution",
+};
+
 export const CHART_LABELS: Record<ChartType, string> = {
-  asset_price: "Asset price",
-  sentiment: "Sentiment",
-  momentum: "Momentum",
-  coverage: "Coverage",
-  custom_index: "Custom index",
+  asset_price: "Asset Price",
+  sentiment: "Keyword Search Volume",
+  momentum: "Target Search Volume",
+  coverage: "Coverage Volume",
+  custom_index: "Keyword Search Volume (custom composite)",
   three_d: "3D",
   three_d_narrative: "3D Narrative Space",
   three_d_derivative: "3D Derivative Space",
-  institution_bias: "Institution bias",
-  rating_distribution: "Rating distribution",
+  institution_bias: "Institution Bias",
+  rating_distribution: "Rating Distribution",
 };
+
+export function researchChartTypeLabel(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  type: ChartType
+): string {
+  const k = RESEARCH_CHART_LABEL_KEYS[type];
+  const v = t(k);
+  return v !== k ? v : CHART_LABELS[type];
+}
 
 export type ResearchChartProps = {
   type: ChartType;
@@ -76,6 +100,9 @@ export function ResearchChart({
   onMoveUp,
   onMoveDown,
 }: ResearchChartProps) {
+  const { t } = useI18n();
+  const typeLabel = researchChartTypeLabel(t, type);
+
   if (isDbBackedAnalysisType(type)) {
     return (
       <div className="relative flex h-full min-h-[120px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
@@ -90,7 +117,7 @@ export function ResearchChart({
         ) : (
           <>
             <span className="rounded bg-slate-700/60 px-2 py-1 text-xs font-medium text-slate-400">Needs entity target</span>
-            <p className="mt-2 text-sm text-slate-300">{CHART_LABELS[type]}</p>
+            <p className="mt-2 text-sm text-slate-300">{typeLabel}</p>
             <p className="mt-1 text-xs text-slate-500">Set an Entity in Research Universe to enable this block.</p>
           </>
         )}
@@ -119,7 +146,7 @@ export function ResearchChart({
     return (
       <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-2">
         <div className="flex items-center justify-between gap-1">
-          <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+          <span className="text-xs font-medium text-slate-400">{typeLabel}</span>
           <div className="flex items-center gap-0.5">
             {onMoveUp && (
               <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">
@@ -150,7 +177,7 @@ export function ResearchChart({
     return (
       <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-2">
         <div className="flex items-center justify-between gap-1">
-          <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+          <span className="text-xs font-medium text-slate-400">{typeLabel}</span>
           <div className="flex items-center gap-0.5">
             {onMoveUp && (
               <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">
@@ -179,7 +206,7 @@ export function ResearchChart({
   return (
     <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-3">
       <div className="flex items-center justify-between gap-1">
-        <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+        <span className="text-xs font-medium text-slate-400">{typeLabel}</span>
         <div className="flex items-center gap-0.5">
           {onMoveUp && (
             <button

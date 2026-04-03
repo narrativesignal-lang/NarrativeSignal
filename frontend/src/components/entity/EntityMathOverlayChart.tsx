@@ -5,7 +5,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BlockStateMessage } from "@/components/BlockStateMessage";
 import { api, parseApiError } from "@/lib/api";
 import type { CandleBar } from "@/lib/ohlcvBars";
-import { ENTITY_OVERLAY_SERIES_META, isEntityOverlaySeriesKey } from "@/lib/entityWorkspaceCharts";
+import {
+  ENTITY_OVERLAY_SERIES_META,
+  entityOverlaySeriesLabel,
+  isEntityOverlaySeriesKey,
+} from "@/lib/entityWorkspaceCharts";
 import {
   OVERLAY_LOCAL_RANGES,
   type OverlayLocalRange,
@@ -229,7 +233,7 @@ export function EntityMathOverlayChart({
         const raw = dates.map((d) => pull(priceMap, d));
         lines.push({
           id: "price_close",
-          label: ENTITY_OVERLAY_SERIES_META.price_close.label,
+          label: entityOverlaySeriesLabel(t, "price_close"),
           color: COLORS[colorIdx % COLORS.length]!,
           raw,
         });
@@ -239,7 +243,7 @@ export function EntityMathOverlayChart({
         const raw = dates.map((d) => pull(targetMap, d));
         lines.push({
           id: "target_search_volume",
-          label: ENTITY_OVERLAY_SERIES_META.target_search_volume.label,
+          label: entityOverlaySeriesLabel(t, "target_search_volume"),
           color: COLORS[colorIdx % COLORS.length]!,
           raw,
         });
@@ -249,7 +253,7 @@ export function EntityMathOverlayChart({
         const raw = dates.map((d) => pull(keywordsMap, d));
         lines.push({
           id: "keywords_search_volume",
-          label: ENTITY_OVERLAY_SERIES_META.keywords_search_volume.label,
+          label: entityOverlaySeriesLabel(t, "keywords_search_volume"),
           color: COLORS[colorIdx % COLORS.length]!,
           raw,
         });
@@ -259,7 +263,7 @@ export function EntityMathOverlayChart({
         const raw = dates.map((d) => pull(coverageMap, d));
         lines.push({
           id: "coverage_volume",
-          label: ENTITY_OVERLAY_SERIES_META.coverage_volume.label,
+          label: entityOverlaySeriesLabel(t, "coverage_volume"),
           color: COLORS[colorIdx % COLORS.length]!,
           raw,
         });
@@ -278,23 +282,26 @@ export function EntityMathOverlayChart({
         const rt = dates.map((d) => pullTr(triple.trading_activity, d));
         const rn = dates.map((d) => pullTr(triple.news_volume, d));
         const rs = dates.map((d) => pullTr(triple.search_volume, d));
+        const tripleTrading = t("workspace.tripleSignalTradingActivity");
+        const covVol = t("workspace.coverageVolume");
+        const kwVol = t("workspace.keywordSearchVolume");
         lines.push({
           id: "triple_trading",
-          label: "Trading activity",
+          label: tripleTrading !== "workspace.tripleSignalTradingActivity" ? tripleTrading : "Trading activity",
           color: COLORS[colorIdx % COLORS.length]!,
           raw: rt,
         });
         colorIdx += 1;
         lines.push({
           id: "triple_news",
-          label: "News volume",
+          label: covVol !== "workspace.coverageVolume" ? covVol : ENTITY_OVERLAY_SERIES_META.coverage_volume.label,
           color: COLORS[colorIdx % COLORS.length]!,
           raw: rn,
         });
         colorIdx += 1;
         lines.push({
           id: "triple_search",
-          label: "Keywords search",
+          label: kwVol !== "workspace.keywordSearchVolume" ? kwVol : ENTITY_OVERLAY_SERIES_META.keywords_search_volume.label,
           color: COLORS[colorIdx % COLORS.length]!,
           raw: rs,
         });

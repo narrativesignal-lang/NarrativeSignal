@@ -118,6 +118,10 @@ export function TripleSignalChartBlock({
     return <BlockStateMessage kind="no_data" height={160} reason="no metrics yet / not synced" />;
   }
 
+  const tripleTradingLbl = t("workspace.tripleSignalTradingActivity");
+  const coverageLbl = t("workspace.coverageVolume");
+  const keywordLbl = t("workspace.keywordSearchVolume");
+
   return (
     <div className="w-full overflow-x-auto">
       <svg width={w} height={height} className="min-w-[320px]" aria-label="Triple signal chart">
@@ -127,13 +131,16 @@ export function TripleSignalChartBlock({
       </svg>
       <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-500">
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden /> Trading activity
+          <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden />
+          {tripleTradingLbl !== "workspace.tripleSignalTradingActivity" ? tripleTradingLbl : "Trading activity"}
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-red-500" aria-hidden /> News volume
+          <span className="h-2 w-2 rounded-full bg-red-500" aria-hidden />
+          {coverageLbl !== "workspace.coverageVolume" ? coverageLbl : "Coverage Volume"}
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden /> Keywords search (narrative)
+          <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden />
+          {keywordLbl !== "workspace.keywordSearchVolume" ? keywordLbl : "Keyword Search Volume"}
         </span>
       </div>
     </div>
