@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
+from app.core.config import settings
 from app.db.init_db import init_db
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.response_cache import ResponseCacheMiddleware
@@ -11,9 +12,10 @@ from app.middleware.response_cache import ResponseCacheMiddleware
 
 app = FastAPI(title="AI Narrative & Sentiment Investing Platform", version="0.1.0")
 
+_cors_origins = [o.strip() for o in (settings.cors_allow_origins or "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,12 +40,28 @@ def _startup() -> None:
     _seed_instruments_if_empty()
     _ensure_local_instruments()
     # Background core-data warmup: default indices OHLCV/quotes + macro news DB rows (non-blocking).
-    try:
-        from app.services.core_data_warmup import start_core_data_warmup_background
+    if _startup_warmups_enabled():
+        try:
+            from app.services.core_data_warmup import start_core_data_warmup_background
 
-        start_core_data_warmup_background()
+            start_core_data_warmup_background()
+        except Exception:
+            pass
+
+
+def _startup_warmups_enabled() -> bool:
+    """
+    Runtime flag override for startup warmups.
+    Priority: runtime flag > env/config (settings.enable_startup_warmups).
+    """
+    try:
+        from app.db.session import SessionLocal
+        from app.services.runtime_flags import RuntimeFlagKey, get_flag
+
+        with SessionLocal() as db:
+            return bool(get_flag(db, RuntimeFlagKey.ENABLE_STARTUP_WARMUPS, default=bool(getattr(settings, "enable_startup_warmups", False))))
     except Exception:
-        pass
+        return bool(getattr(settings, "enable_startup_warmups", False))
 
 
 def _seed_admin_if_missing() -> None:

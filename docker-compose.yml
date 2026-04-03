@@ -24,6 +24,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/narrative
       REDIS_URL: redis://redis:6379/0
+      CORS_ALLOW_ORIGINS: http://127.0.0.1:3000
       TWELVE_API_KEY: ${TWELVE_API_KEY:-}
     depends_on:
       - postgres

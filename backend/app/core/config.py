@@ -2,11 +2,30 @@ from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Underscore-free Gemini IDs for :generateContent often 404; map legacy env values to a current model.
+_GEMINI_REST_MODEL_ALIASES: dict[str, str] = {
+    "gemini-1.5-flash": "gemini-2.0-flash",
+    "gemini-1.5-flash-001": "gemini-2.0-flash",
+    "gemini-1.5-pro": "gemini-2.0-flash",
+    "gemini-pro": "gemini-2.0-flash",
+}
+
+
+def resolve_gemini_rest_model_id(configured: str | None) -> str:
+    """REST path segment for ``.../models/{id}:generateContent`` (not a secret)."""
+    m = (configured or "").strip()
+    if not m:
+        m = "gemini-2.0-flash"
+    return _GEMINI_REST_MODEL_ALIASES.get(m, m)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     env: str = "dev"
+
+    # Comma-separated browser origins for CORS. Empty = none (set per deployment, e.g. in docker-compose).
+    cors_allow_origins: str = ""
 
     database_url: str
     redis_url: str
@@ -20,8 +39,10 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
+    # Optional override; default chat URL is derived in code when unset.
+    openai_chat_completions_url: str | None = None
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.0-flash"
 
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -44,12 +65,22 @@ class Settings(BaseSettings):
     # Twelve Data (optional): market search / quote / time_series
     twelve_api_key: str | None = None
 
+    # Startup warmups (API process): when enabled, may trigger external provider calls in background.
+    # Local development default should be False to avoid rate-limit collisions.
+    enable_startup_warmups: bool = False
+
+    # Massive: supplemental market data only (background jobs). Never primary; never user-facing.
+    massive_api_key: str | None = None
+    # Hard global quotas (Redis); enforced before every Massive HTTP call.
+    massive_quota_per_minute: int = 30
+    massive_quota_per_day: int = 2000
+
     # Portfolio GET /instruments/search: call Twelve only when local row count is below this (default: empty DB only)
     instrument_search_min_local_before_external: int = 1
 
     # Yahoo/yfinance fallback pacing (worker + snapshot refresh). Cooldown floor is 600s in code.
     yahoo_fallback_min_interval_seconds: float = 1.25
-    yahoo_rate_limit_cooldown_seconds: int = 600
+    yahoo_rate_limit_cooldown_seconds: int = 1200
 
 
 settings = Settings()

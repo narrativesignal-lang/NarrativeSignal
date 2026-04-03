@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 
-# Minimal env so `app.core.config.settings` loads without a real `.env` in CI/local bare runs.
+# Minimal env so `app.core.config.settings` loads without a real `.env` in CI.
+# Docker-first defaults (override REDIS_URL / DATABASE_URL when running pytest on the host).
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
+os.environ.setdefault("REDIS_URL", "redis://redis:6379/15")
 os.environ.setdefault("JWT_SECRET", "pytest-jwt-secret-at-least-32-chars-long!!")
 
 import pytest
