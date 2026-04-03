@@ -72,10 +72,30 @@ export default function NewsDetailPage() {
         } else {
           const cached = readMacroNewsArticleFromSession(id);
           if (!cached) {
-            setArticle(null);
-            setError(
-              "This story isn’t cached. Open it from the Macro news list on the dashboard, or use your browser Back button."
-            );
+            // Deep-link support: fetch from backend snapshot-by-id endpoint.
+            try {
+              const res = await api.macroNewsItem(id);
+              setArticle({
+                id: res.id,
+                title: res.title,
+                source: res.source ?? "—",
+                timestamp: res.timestamp ?? null,
+                category: res.category ?? category ?? null,
+                subcategory: res.subcategory ?? subcategory ?? null,
+                sentiment: res.sentiment ?? null,
+                impact: res.impact ?? null,
+                summary: res.summary ?? null,
+                url: res.url ?? null,
+                duplicate_count:
+                  typeof res.duplicate_count === "number" && res.duplicate_count >= 1
+                    ? res.duplicate_count
+                    : 1,
+                related_publishers: Array.isArray(res.related_publishers) ? res.related_publishers : [],
+              });
+            } catch (e: any) {
+              setArticle(null);
+              setError(e?.message ?? "Article not found.");
+            }
           } else {
             setArticle({
               id: cached.id,

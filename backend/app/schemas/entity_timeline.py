@@ -37,6 +37,10 @@ class TimelinePointsResponse(BaseModel):
     data_updated_at: str | None = None
     data_source: str = "snapshot"
     stale: bool = False
+    official_events_available: bool = Field(
+        default=False,
+        description="True when structured official/scheduled events are ingested (e.g. SEC, economic calendar).",
+    )
 
 
 class TimelineNewsItemOut(BaseModel):
@@ -57,7 +61,12 @@ class TimelineWindowResponse(BaseModel):
     window_end_iso: str
     symbol: str
     items: list[TimelineNewsItemOut]
-    data_mode: Literal["placeholder", "live"] = "placeholder"
+    data_mode: Literal["placeholder", "live"] = "live"
+    news_status: Literal["has_items", "no_relevant_news", "fetch_failed"] = "has_items"
+    status_message: str | None = Field(
+        default=None,
+        description="Human-facing note when items are empty (e.g. no relevant news for a volatility move).",
+    )
 
 
 class AiSummaryRequest(BaseModel):

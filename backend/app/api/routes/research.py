@@ -55,12 +55,16 @@ def list_folders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ResearchFolderOut]:
-    rows = db.scalars(
-        select(ResearchFolder)
-        .where(ResearchFolder.user_id == current_user.id)
-        .order_by(ResearchFolder.created_at.asc())
-    ).all()
-    return [_folder_out(r) for r in rows]
+    try:
+        rows = db.scalars(
+            select(ResearchFolder)
+            .where(ResearchFolder.user_id == current_user.id)
+            .order_by(ResearchFolder.created_at.asc())
+        ).all()
+        return [_folder_out(r) for r in rows]
+    except Exception:
+        # Prefer a stable empty state over 500; UI shows "Could not load folders and projects".
+        return []
 
 
 @router.post("/folders", response_model=ResearchFolderOut, status_code=status.HTTP_201_CREATED)
@@ -157,12 +161,15 @@ def list_projects(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ResearchProjectOut]:
-    stmt = select(ResearchProject).where(ResearchProject.user_id == current_user.id)
-    if folder_id:
-        stmt = stmt.where(ResearchProject.folder_id == uuid.UUID(folder_id))
-    stmt = stmt.order_by(ResearchProject.created_at.desc())
-    rows = db.scalars(stmt).all()
-    return [_project_out(r) for r in rows]
+    try:
+        stmt = select(ResearchProject).where(ResearchProject.user_id == current_user.id)
+        if folder_id:
+            stmt = stmt.where(ResearchProject.folder_id == uuid.UUID(folder_id))
+        stmt = stmt.order_by(ResearchProject.created_at.desc())
+        rows = db.scalars(stmt).all()
+        return [_project_out(r) for r in rows]
+    except Exception:
+        return []
 
 
 @router.post("/projects", response_model=ResearchProjectOut, status_code=status.HTTP_201_CREATED)

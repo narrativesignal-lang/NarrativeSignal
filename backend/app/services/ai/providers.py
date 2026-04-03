@@ -7,7 +7,7 @@ from typing import Protocol
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.core.config import settings
+from app.core.config import resolve_gemini_rest_model_id, settings
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class AnalysisResult:
     detected_events: list[dict]
     provider: str
     model: str
+    confidence: float | None = None  # 0..100 when provider returns it
 
 
 class AIProvider(Protocol):
@@ -44,9 +45,11 @@ class HeuristicProvider:
         score = 0.0 if pos == neg else max(-1.0, min(1.0, (pos - neg) / max(3.0, pos + neg)))
         summary = "Heuristic summary (MVP): sentiment inferred from simple keyword cues."
         events = []
+        conf = 35.0 + min(50.0, abs(float(score)) * 50.0)
         return AnalysisResult(
             sentiment_label=label,
             sentiment_score=score,
+            confidence=round(conf, 2),
             narrative_summary=summary,
             detected_events=events,
             provider=self.provider,
@@ -70,7 +73,8 @@ class OpenAIProvider:
         system = (
             "You are a market narrative analyst. Output STRICT JSON only (no markdown). "
             "Schema: {sentiment_label: 'bullish'|'bearish'|'neutral', sentiment_score: number (-1..1), "
-            "narrative_summary: string (<=80 words), detected_events: [{title:string, details:string}]}."
+            "confidence: number (0..100), narrative_summary: string (<=80 words), "
+            "detected_events: [{title:string, details:string}]}."
         )
         payload = {
             "model": self.model,
@@ -90,6 +94,7 @@ class OpenAIProvider:
         return AnalysisResult(
             sentiment_label=data["sentiment_label"],
             sentiment_score=float(data["sentiment_score"]),
+            confidence=float(data.get("confidence")) if data.get("confidence") is not None else None,
             narrative_summary=data["narrative_summary"],
             detected_events=list(data.get("detected_events") or []),
             provider=self.provider,
@@ -103,7 +108,7 @@ class GeminiProvider:
     def __init__(self) -> None:
         if not settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY not set")
-        self.model = settings.gemini_model
+        self.model = resolve_gemini_rest_model_id(settings.gemini_model)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=6))
     def analyze(self, *, text: str) -> AnalysisResult:
@@ -112,7 +117,8 @@ class GeminiProvider:
         prompt = (
             "Return STRICT JSON only (no markdown). "
             "Schema: {sentiment_label: 'bullish'|'bearish'|'neutral', sentiment_score: number (-1..1), "
-            "narrative_summary: string (<=80 words), detected_events: [{title:string, details:string}]}. "
+            "confidence: number (0..100), narrative_summary: string (<=80 words), "
+            "detected_events: [{title:string, details:string}]}. "
             "Text:\n" + text[:8000]
         )
         payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
@@ -124,6 +130,7 @@ class GeminiProvider:
         return AnalysisResult(
             sentiment_label=data["sentiment_label"],
             sentiment_score=float(data["sentiment_score"]),
+            confidence=float(data.get("confidence")) if data.get("confidence") is not None else None,
             narrative_summary=data["narrative_summary"],
             detected_events=list(data.get("detected_events") or []),
             provider=self.provider,

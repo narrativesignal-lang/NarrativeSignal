@@ -15,6 +15,14 @@ const RANGES: { key: Chart3DRange; label: string }[] = [
   { key: "6m", label: "6M" },
 ];
 
+function sourceFootnoteLabel(raw: string): string {
+  const v = (raw || "").trim().toLowerCase();
+  if (v === "real") return "Available";
+  if (v === "unavailable") return "Unavailable";
+  if (v === "n/a" || v === "na") return "—";
+  return raw || "—";
+}
+
 function NarrativeScene({ path }: { path: [number, number, number][] }) {
   const target = useMemo(() => {
     const c = pathCenter(path);
@@ -50,7 +58,7 @@ function NarrativeScene({ path }: { path: [number, number, number][] }) {
 }
 
 /**
- * Narrative 3D: backend-driven series (search_trend 0–100 vs coverage per day).
+ * Narrative 3D: backend-driven series (narrative keywords search aggregate vs coverage per day).
  */
 export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
   const { t } = useI18n();
@@ -80,16 +88,32 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
   }, [entityId, range]);
 
   const path = useMemo(() => (payload?.points?.length ? pointsToScenePath(payload.points) : []), [payload]);
-  const hasFullyRealInputs = payload?.source_status.search_trend === "real" && payload?.source_status.coverage_volume === "real";
+  const hasFullyRealInputs =
+    payload?.source_status.keywords_search_volume === "real" && payload?.source_status.coverage_volume === "real";
   const dataState = useMemo(() => {
     if (loading) return "loading";
     if (error) return "empty";
     if (payload && !hasFullyRealInputs) return "insufficient";
     if (!payload || path.length === 0) return "empty";
     if (payload.stale) return "stale";
-    if (payload.source_status.search_trend === "real") return "real";
+    if (payload.source_status.keywords_search_volume === "real") return "real";
     return "empty";
   }, [loading, error, payload, path.length, hasFullyRealInputs]);
+
+  const statusPill = useMemo(() => {
+    switch (dataState) {
+      case "real":
+        return t("workspace.chart3dStatusLive");
+      case "insufficient":
+        return t("workspace.chart3dStatusIncomplete");
+      case "stale":
+        return t("workspace.chart3dStatusStale");
+      case "loading":
+        return t("common.loading");
+      default:
+        return t("workspace.chart3dStatusNoData");
+    }
+  }, [dataState, t]);
 
   return (
     <div className="relative flex h-full w-full min-h-[160px] flex-col bg-[#0b1120]">
@@ -106,7 +130,7 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
                 : "bg-slate-800 text-slate-300"
           }`}
         >
-          {dataState}
+          {statusPill}
         </span>
         {RANGES.map((r) => (
           <button
@@ -123,22 +147,27 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
         ))}
       </div>
 
-      <div className="relative min-h-[200px] flex-1">
+      <div className="relative mx-auto w-full max-w-[720px] aspect-square min-h-[260px] shrink-0 flex-1">
         {loading ? (
-          <div className="flex h-[220px] items-center justify-center text-xs text-slate-500">{t("entity.loadingSeries")}</div>
+          <div className="flex h-full min-h-[200px] items-center justify-center text-xs text-slate-500">
+            {t("entity.loadingSeries")}
+          </div>
         ) : error ? (
-          <div className="flex h-[220px] items-center justify-center px-3 text-center text-xs text-red-300/90">{error}</div>
+          <div className="flex h-full min-h-[200px] items-center justify-center px-3 text-center text-xs text-red-300/90">
+            {error}
+          </div>
         ) : payload && !hasFullyRealInputs ? (
-          <div className="flex h-[220px] items-center justify-center px-4 text-center text-xs text-slate-500">
-            Insufficient data: 3D path requires real search trend index and real coverage data.
+          <div className="flex h-full min-h-[200px] items-center justify-center px-4 text-center text-xs text-slate-500">
+            {payload.message?.trim() ||
+              "Need keywords search volume and news coverage on the same days. Try another range or wait for data."}
           </div>
         ) : path.length === 0 ? (
-          <div className="flex h-[220px] items-center justify-center px-4 text-center text-xs text-slate-500">
-            {t("entity.noMetricRows")}
+          <div className="flex h-full min-h-[200px] items-center justify-center px-4 text-center text-xs text-slate-500">
+            {payload?.message?.trim() || t("entity.noMetricRows")}
           </div>
         ) : (
           <Canvas
-            className="h-full w-full min-h-[200px] touch-none"
+            className="h-full w-full min-h-0 touch-none"
             camera={{ position: [2.8, 2.2, 2.8], fov: 48, near: 0.08, far: 120 }}
             gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
             key={`${range}-${path.length}`}
@@ -153,15 +182,17 @@ export function EntityWorkspace3DChart({ entityId }: { entityId: string }) {
       <div className="relative border-t border-slate-800/80 px-2 py-1.5 text-[10px] leading-snug text-slate-500">
         <div className="flex flex-wrap gap-x-3 gap-y-0.5">
           <span>
-            Axis: <span className="text-slate-400">X time</span> · <span className="text-slate-400">Y search trend</span>{" "}
-            · <span className="text-slate-400">Z coverage</span>
+            Axis: <span className="text-slate-400">X time</span> ·{" "}
+            <span className="text-slate-400">Y keywords search</span> · <span className="text-slate-400">Z coverage</span>
           </span>
         </div>
         {payload ? (
           <div className="mt-0.5 text-slate-600">
-            Source: search trend ({payload.source_status.search_trend}), coverage ({payload.source_status.coverage_volume}) — relative
-            index 0–100, not absolute search volume.
-            {payload.last_updated_at ? ` Updated: ${payload.last_updated_at}.` : ""}
+            {t("workspace.chart3dSourceLine", {
+              keywords: sourceFootnoteLabel(payload.source_status.keywords_search_volume),
+              coverage: sourceFootnoteLabel(payload.source_status.coverage_volume),
+            })}
+            {payload.last_updated_at ? ` ${t("workspace.chart3dUpdated")} ${payload.last_updated_at}.` : ""}
           </div>
         ) : null}
         <p className="pointer-events-none mt-1 text-slate-600">{t("workspace.rotateZoom")}</p>

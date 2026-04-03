@@ -21,6 +21,7 @@ from app.models.portfolio import PortfolioEntity
 from app.models.user import User
 from app.models.monitoring import SCHEDULE_TYPES
 from app.schemas.schedules import EntityLabel, MODEL_OPTIONS, ScheduleCreate, ScheduleOut
+from app.services.runtime_flags import RuntimeFlagKey, ai_feature_enabled
 from app.worker.tasks import trigger_monitoring_run
 
 
@@ -126,6 +127,23 @@ def create_schedule(
         current_user, feature_key_for_schedule_type(schedule_type)
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=AI_FEATURES_FORBIDDEN_DETAIL)
+
+    # Runtime AI kill-switch: never create AI schedules when disabled; do not silently downgrade.
+    if schedule_type == "ai_alert" and not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_ALERTS):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"ok": False, "disabled": True, "reason": "disabled_by_runtime_flag", "flag": RuntimeFlagKey.ENABLE_AI_ALERTS},
+        )
+    if schedule_type == "ai_report" and not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_REPORT_GENERATION):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "ok": False,
+                "disabled": True,
+                "reason": "disabled_by_runtime_flag",
+                "flag": RuntimeFlagKey.ENABLE_AI_REPORT_GENERATION,
+            },
+        )
     model = (payload.model or "").strip() or None
     if model and model not in MODEL_OPTIONS:
         model = None

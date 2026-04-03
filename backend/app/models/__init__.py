@@ -1,11 +1,13 @@
 from app.models.active_market_pool import ActiveMarketPoolEntry
 from app.models.data_subscription import (
     EntityDailyMetric,
+    EntityTripleSignalDaily,
     MarketQuoteSnapshot,
     NormalizedNewsDocument,
     OhlcvSnapshot,
     UserDataSubscription,
 )
+from app.models.entity_analysis import EntityAnalysis
 from app.models.credit import CreditLedger
 from app.models.document_analysis import DocumentAnalysis
 from app.models.document import SourceDocument
@@ -27,6 +29,10 @@ from app.models.user import User
 from app.models.community import CommunitySubmission, CommunityDataRequest
 from app.models.macro_index import MacroIndex
 from app.models.macro_news_list_snapshot import MacroNewsListSnapshot
+from app.models.massive_backfill_queue import MassiveBackfillQueueEntry
+from app.models.system_runtime_flag import SystemRuntimeFlag
+from app.models.entity_sentiment_baseline import EntitySentimentBaseline
+from app.models.massive_ai_cache import MassiveAiExplanationCache
 
 __all__ = [
     "ActiveMarketPoolEntry",
@@ -34,7 +40,9 @@ __all__ = [
     "MarketQuoteSnapshot",
     "OhlcvSnapshot",
     "EntityDailyMetric",
+    "EntityTripleSignalDaily",
     "NormalizedNewsDocument",
+    "EntityAnalysis",
     "User",
     "KeywordGroup",
     "KeywordTerm",
@@ -67,5 +75,9 @@ __all__ = [
     "CommunityDataRequest",
     "MacroIndex",
     "MacroNewsListSnapshot",
+    "MassiveBackfillQueueEntry",
+    "SystemRuntimeFlag",
+    "EntitySentimentBaseline",
+    "MassiveAiExplanationCache",
 ]
 

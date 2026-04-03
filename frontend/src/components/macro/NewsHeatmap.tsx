@@ -43,7 +43,7 @@ export function NewsHeatmap({
   if (!categorySlug) {
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-500">
-        {t("macro.selectCategoryHeatmap")}
+        No data yet — select a category
       </div>
     );
   }
@@ -51,7 +51,7 @@ export function NewsHeatmap({
   if (cells.length === 0) {
     return (
       <div className="flex h-full min-h-[200px] items-center justify-center rounded-lg border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-500">
-        {t("macro.noSubcategories")}
+        No data yet — no news / no subcategories
       </div>
     );
   }

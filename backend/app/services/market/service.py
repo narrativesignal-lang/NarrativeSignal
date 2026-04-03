@@ -21,6 +21,122 @@ logger = logging.getLogger(__name__)
 DEFAULT_INDEX_SYMBOLS = frozenset(core_and_default_symbols())
 
 
+def fetch_batch_quotes_yahoo(symbols: list[str]) -> dict[str, dict]:
+    """
+    Batch Yahoo quote via yfinance download (single call for chunk).
+    Returns {SYM: {price, change_percent, _yahoo_used}} for each requested symbol (best-effort).
+    """
+    syms = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    out: dict[str, dict] = {s: {"price": None, "change_percent": None, "_yahoo_used": False} for s in uniq}
+    if not uniq:
+        return out
+    if yahoo_provider_paused():
+        return {s: {"price": None, "change_percent": None, "_yahoo_used": False} for s in uniq}
+
+    yahoo_spacing_sleep_before_call()
+    try:
+        df = yf.download(
+            " ".join(uniq), period="5d", interval="1d", progress=False, auto_adjust=False, threads=False, group_by="ticker"
+        )
+        if df is None or df.empty:
+            bump_external("yahoo_quote_batch", 1)
+            return {s: {"price": None, "change_percent": None, "_yahoo_used": True} for s in uniq}
+
+        for sym in uniq:
+            try:
+                sub = df[sym] if sym in df.columns.get_level_values(0) else None
+                if sub is None:
+                    continue
+                closes = sub["Close"].dropna() if "Close" in sub.columns else None
+                opens = sub["Open"].dropna() if "Open" in sub.columns else None
+                if closes is None or len(closes) < 1:
+                    continue
+                price = float(closes.iloc[-1])
+                prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else (float(opens.iloc[-1]) if opens is not None and len(opens) else None)
+                if prev_close in (None, 0):
+                    continue
+                out[sym] = {
+                    "price": price,
+                    "change_percent": ((price - prev_close) / prev_close) * 100.0,
+                    "_yahoo_used": True,
+                }
+            except Exception:
+                continue
+        bump_external("yahoo_quote_batch", 1)
+    except Exception as e:
+        logger.warning("fetch_batch_quotes_yahoo failed: %s", e)
+        if exception_looks_like_yahoo_rate_limit(e):
+            yahoo_mark_rate_limited()
+        return {s: {"price": None, "change_percent": None, "_yahoo_used": True} for s in uniq}
+    return out
+
+
+def fetch_batch_ohlcv_yahoo(symbols: list[str], *, period: str = "1M") -> dict[str, list[OhlcvBar]]:
+    """
+    Batch Yahoo OHLCV via yfinance download for chunk.
+    Returns {SYM: [OhlcvBar...]} best-effort.
+    """
+    p = (period or "1M").upper()
+    syms = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    out: dict[str, list[OhlcvBar]] = {s: [] for s in uniq}
+    if not uniq:
+        return out
+    if yahoo_provider_paused():
+        return out
+
+    yahoo_spacing_sleep_before_call()
+    yf_period = {"1D": "5d", "5D": "1mo", "1M": "3mo", "6M": "6mo", "1Y": "1y", "MAX": "max"}.get(p, "3mo")
+    try:
+        df = yf.download(
+            " ".join(uniq), period=yf_period, interval="1d", progress=False, auto_adjust=False, threads=False, group_by="ticker"
+        )
+        if df is None or df.empty:
+            bump_external("yahoo_ohlcv_batch", 1)
+            return out
+        for sym in uniq:
+            try:
+                sub = df[sym] if sym in df.columns.get_level_values(0) else None
+                if sub is None or sub.empty:
+                    continue
+                bars: list[OhlcvBar] = []
+                for idx, row in sub.iterrows():
+                    ts = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else datetime.fromisoformat(str(idx))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    bars.append(
+                        OhlcvBar(
+                            t=ts,
+                            o=float(row.get("Open", 0)),
+                            h=float(row.get("High", 0)),
+                            l=float(row.get("Low", 0)),
+                            c=float(row.get("Close", 0)),
+                            v=float(row.get("Volume", 0)),
+                        )
+                    )
+                out[sym] = bars
+            except Exception:
+                continue
+        bump_external("yahoo_ohlcv_batch", 1)
+    except Exception as e:
+        logger.warning("fetch_batch_ohlcv_yahoo failed: %s", e)
+        if exception_looks_like_yahoo_rate_limit(e):
+            yahoo_mark_rate_limited()
+        return out
+    return out
+
+
 def fetch_quote_stooq(symbol: str) -> dict:
     """
     Stooq daily OHLCV → latest close vs prior close (no Yahoo).

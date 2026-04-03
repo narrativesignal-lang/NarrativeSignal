@@ -1,8 +1,4 @@
-"""
-Route market quote / time_series to a logical provider (v1: twelvedata vs snapshot fallback).
-
-Future (HK/A-share/commodity): extend routing here; keep /api/market/* handlers thin.
-"""
+"""Logical provider routing for quote/time_series with ordered fallback chain."""
 
 from __future__ import annotations
 
@@ -10,14 +6,17 @@ from typing import Literal
 
 from app.services.symbol_mapping import map_symbol_for_twelve, normalize_user_symbol
 
-MarketQuoteProvider = Literal["twelvedata", "fallback"]
-MarketTimeSeriesProvider = Literal["twelvedata", "fallback"]
+PRIMARY_PROVIDER = "twelve"
+FALLBACK_CHAIN = ["yahoo", "fallback_provider"]
+
+MarketQuoteProvider = Literal["twelve", "yahoo", "fallback_provider", "unavailable"]
+MarketTimeSeriesProvider = Literal["twelve", "yahoo", "fallback_provider", "unavailable"]
 
 
-def _primary_route(symbol: str) -> Literal["twelvedata", "fallback"]:
+def _primary_route(symbol: str) -> Literal["twelve", "fallback_provider"]:
     if map_symbol_for_twelve(normalize_user_symbol(symbol)) is not None:
-        return "twelvedata"
-    return "fallback"
+        return "twelve"
+    return "fallback_provider"
 
 
 def route_quote_provider(symbol: str) -> MarketQuoteProvider:

@@ -19,6 +19,7 @@ from app.services.macro_news_dedup import finalize_macro_news_list
 logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = "entity_news:v1:"
+TIMELINE_CACHE_PREFIX = "entity_news:timeline:v1:"
 CACHE_TTL_SEC = 600  # 10 minutes
 FETCH_TIMEOUT = 8.0
 
@@ -154,3 +155,66 @@ def fetch_entity_news(
         logger.debug("entity_news cache write failed: %s", e)
 
     return payload, query, None, False
+
+
+def fetch_entity_news_by_query(
+    *,
+    entity_id: str,
+    query: str,
+    limit: int = 60,
+    cache_prefix: str = TIMELINE_CACHE_PREFIX,
+) -> tuple[list[dict[str, Any]], str | None, str | None, bool]:
+    """
+    Google News RSS for an explicit query string (timeline volatility / official windows).
+    Separate cache namespace from mode-based entity_news fetches.
+    """
+    q = (query or "").strip()
+    if not q:
+        return [], None, "empty_query", False
+
+    cache_key = cache_prefix + hashlib.sha256(f"{entity_id}:{q}".encode()).hexdigest()
+    try:
+        raw = _r().get(cache_key)
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict) and isinstance(data.get("items"), list):
+                return data["items"], data.get("query") or q, None, True
+            if isinstance(data, list):
+                return data, q, None, True
+    except Exception as e:
+        logger.debug("entity_news_by_query cache read failed: %s", e)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=14)
+    feed_url = _google_rss_url(q, when="7d")
+    try:
+        batch = _items_from_feed_url(
+            "entity",
+            "timeline_query",
+            feed_url,
+            now=now,
+            cutoff=cutoff,
+            timeout=FETCH_TIMEOUT,
+        )
+    except Exception as e:
+        logger.warning("entity_news_by_query fetch failed entity_id=%s err=%s", entity_id, e)
+        return [], q, "fetch_failed", False
+
+    try:
+        final = finalize_macro_news_list(batch, min(limit, 80))
+    except Exception as e:
+        logger.warning("entity_news_by_query dedup failed: %s", e)
+        batch.sort(key=lambda x: x.timestamp, reverse=True)
+        final = batch[:limit]
+
+    payload = _items_to_payload(final, matched_by="keyword")
+    try:
+        _r().setex(
+            cache_key,
+            CACHE_TTL_SEC,
+            json.dumps({"query": q, "items": payload}, default=str),
+        )
+    except Exception as e:
+        logger.debug("entity_news_by_query cache write failed: %s", e)
+
+    return payload, q, None, False

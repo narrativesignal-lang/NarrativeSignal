@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { ComparisonChart } from "@/components/ComparisonChart";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 
 export function EntitySplitSentimentChart({
   entityId,
@@ -25,7 +26,7 @@ export function EntitySplitSentimentChart({
       setSeries([
         {
           symbol: "Sentiment",
-          points: res.points.map((p) => ({ t: p.t, value: p.value })),
+          points: res.points.map((p) => ({ t: p.t, value: p.sentiment_score })),
         },
       ]);
     } catch (e: unknown) {
@@ -41,11 +42,7 @@ export function EntitySplitSentimentChart({
   }, [load]);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[140px] items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500">
-        Loading…
-      </div>
-    );
+    return <BlockStateMessage kind="loading" height={140} />;
   }
   if (error) {
     return (
@@ -53,6 +50,9 @@ export function EntitySplitSentimentChart({
         {error}
       </div>
     );
+  }
+  if (!series.length || series.every((s) => !s.points.length)) {
+    return <BlockStateMessage kind="no_data" height={140} reason="no news / not computed" />;
   }
   return (
     <div className="flex flex-col gap-2">

@@ -4,10 +4,15 @@ import type { WorkspaceChartBlock } from "@/lib/entityWorkspaceCharts";
 import {
   getWorkspaceChartDisplayTitle,
   getBlockKind,
+  WORKSPACE_BLOCK_AI_COST,
   WORKSPACE_CHART_LABELS,
   type WorkspaceChartType,
 } from "@/lib/entityWorkspaceCharts";
 import { useI18n } from "@/lib/i18n";
+import { useUser } from "@/lib/UserContext";
+import { canUseWorkspaceAiCost } from "@/lib/workspaceAiAccess";
+
+const AI_TOOLTIP = "Uses AI on the server · may take several seconds · may consume AI credits";
 
 function typeBadgeClass(type: WorkspaceChartType | string): string {
   const kind = getBlockKind(type);
@@ -33,8 +38,12 @@ export function EntityWorkspaceChartCard({
   children?: React.ReactNode;
 }) {
   const { t } = useI18n();
+  const { user } = useUser();
   const typeLabel = WORKSPACE_CHART_LABELS[block.type] ?? block.type;
   const chartTitle = getWorkspaceChartDisplayTitle(block);
+  const aiCost = WORKSPACE_BLOCK_AI_COST[block.type as WorkspaceChartType] ?? "none";
+  const showAi = aiCost !== "none";
+  const aiLocked = showAi && !canUseWorkspaceAiCost(user ?? null, aiCost);
 
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-900/50 overflow-hidden">
@@ -45,7 +54,22 @@ export function EntityWorkspaceChartCard({
           {typeLabel}
         </span>
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100" title={chartTitle}>
-          {chartTitle}
+          {chartTitle}{" "}
+          {showAi ? (
+            <span className="inline-flex items-center gap-1 align-middle">
+              <span
+                className="rounded bg-amber-900/50 px-1.5 py-0.5 text-[10px] font-medium text-amber-200"
+                title={AI_TOOLTIP}
+              >
+                {t("workspace.blockAiBadge")}
+              </span>
+              {aiLocked ? (
+                <span className="text-[10px] text-amber-200/90" title={t("workspace.aiPlanLockedShort")}>
+                  🔒
+                </span>
+              ) : null}
+            </span>
+          ) : null}
         </h3>
         <button
           type="button"

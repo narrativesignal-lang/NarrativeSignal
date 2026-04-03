@@ -293,7 +293,7 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex flex-1 items-center justify-center p-4 text-sm text-slate-500">
-          Select a category to see news
+          No data yet — select a category
         </div>
       </div>
     );
@@ -355,7 +355,7 @@ export function NewsList({ categorySlug, subcategoryFilter }: Props) {
       {(!loading || displayedItems.length > 0) && (
         <div className="min-h-0 flex-1 space-y-0 overflow-y-auto pr-2">
           {!loading && displayedItems.length === 0 ? (
-            <div className="py-4 text-sm text-slate-500">No news in this filter.</div>
+            <div className="py-4 text-sm text-slate-500">No data yet — no news in this filter</div>
           ) : displayedItems.length > 0 ? (
             displayedItems.map((item) => (
               <NewsListItem key={item.id} item={item} categorySlug={categorySlug} />

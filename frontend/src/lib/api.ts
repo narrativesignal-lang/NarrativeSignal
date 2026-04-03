@@ -212,8 +212,10 @@ export const api = {
       error: string | null;
     }>(`/api/entities/${encodeURIComponent(entityId)}/news?mode=${encodeURIComponent(mode)}`),
   logout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
-  listUsers: () =>
-    request<
+  listUsers: (params?: { include_load_test?: boolean }) => {
+    const q = new URLSearchParams();
+    if (params?.include_load_test) q.set("include_load_test", "true");
+    return request<
       Array<{
         id: string;
         username: string;
@@ -224,12 +226,29 @@ export const api = {
         created_at: string | null;
         token_version: number;
       }>
-    >("/api/admin/users", { credentials: "include" }),
+    >(`/api/admin/users${q.toString() ? `?${q.toString()}` : ""}`, { credentials: "include" });
+  },
   patchAdminUser: (userId: string, payload: { paid_access: boolean }) =>
     request<{ id: string; username: string; paid_access: boolean; credits_balance: number }>(
       `/api/admin/users/${userId}`,
       { method: "PATCH", body: JSON.stringify(payload) }
     ),
+  bulkDeleteAdminUsers: (userIds: string[]) =>
+    request<{ deleted: number }>("/api/admin/users/bulk", {
+      method: "DELETE",
+      body: JSON.stringify({ user_ids: userIds }),
+    }),
+  deleteObviousTestAdminUsers: () =>
+    request<{ deleted: number }>("/api/admin/users/delete-obvious-test-users", { method: "POST" }),
+  adminSyncSearchTrends: (params?: { entity_id?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.entity_id) q.set("entity_id", params.entity_id);
+    const qs = q.toString();
+    return request<{ entities: number; metric_rows: number }>(
+      `/api/admin/metrics/sync-search-trends${qs ? `?${qs}` : ""}`,
+      { method: "POST" }
+    );
+  },
   listRuntimeFlags: () =>
     request<Array<{ key: string; value_bool: boolean; updated_at: string | null; updated_by: string | null }>>(
       "/api/admin/runtime-flags",
@@ -416,18 +435,46 @@ export const api = {
       `/api/entities/${entityId}/comparison-series?instrument_ids=${encodeURIComponent(instrumentIds)}&period=${period ?? "1M"}`
     ),
 
+  /** @deprecated Prefer getEntityKeywordsSearchVolumeSeries */
   getEntitySearchVolumeSeries: (entityId: string, period?: string) =>
-    request<{ period: string; points: Array<{ t: string; value: number }> }>(
-      `/api/entities/${entityId}/search-volume-series?period=${encodeURIComponent(period ?? "1M")}`
+    request<{
+      period: string;
+      points: Array<{ t: string; value: number }>;
+      message?: string | null;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale" | "no_data";
+      stale?: boolean;
+    }>(`/api/entities/${entityId}/search-volume-series?period=${encodeURIComponent(period ?? "1M")}`),
+  getEntityKeywordsSearchVolumeSeries: (entityId: string, period?: string) =>
+    request<{
+      period: string;
+      points: Array<{ t: string; value: number }>;
+      message?: string | null;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale" | "no_data";
+      stale?: boolean;
+    }>(
+      `/api/entities/${entityId}/keywords-search-volume-series?period=${encodeURIComponent(period ?? "1M")}`
+    ),
+  getEntityTargetSearchVolumeSeries: (entityId: string, period?: string) =>
+    request<{
+      period: string;
+      points: Array<{ t: string; value: number }>;
+      message?: string | null;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale" | "no_data";
+      stale?: boolean;
+    }>(
+      `/api/entities/${entityId}/target-search-volume-series?period=${encodeURIComponent(period ?? "1M")}`
     ),
   getEntityCoverageVolumeSeries: (entityId: string, period?: string) =>
-    request<{ period: string; points: Array<{ t: string; value: number }> }>(
-      `/api/entities/${entityId}/coverage-volume-series?period=${encodeURIComponent(period ?? "1M")}`
-    ),
+    request<{
+      period: string;
+      points: Array<{ t: string; value: number }>;
+      message?: string | null;
+      loading_state?: "ready" | "warming" | "placeholder" | "stale" | "no_data";
+    }>(`/api/entities/${entityId}/coverage-volume-series?period=${encodeURIComponent(period ?? "1M")}`),
   getEntityQuadrant: (entityId: string) =>
     request<{
-      search_momentum: number;
-      coverage_momentum: number;
+      keywords_search_volume: number;
+      coverage_volume: number;
       data_source?: string;
       loading_state?: "ready" | "warming" | "placeholder" | "stale";
       message?: string | null;
@@ -439,7 +486,7 @@ export const api = {
   getEntityQuadrantHistory: (entityId: string, period?: string) =>
     request<{
       period: string;
-      points: Array<{ t: string; coverage_momentum: number; search_momentum: number }>;
+      points: Array<{ t: string; coverage_volume: number; keywords_search_volume: number }>;
       data_source?: string;
       loading_state?: "ready" | "warming" | "placeholder" | "stale";
       message?: string | null;
@@ -451,7 +498,17 @@ export const api = {
     ),
 
   getEntitySentimentSeries: (entityId: string, period?: string) =>
-    request<{ period: string; points: Array<{ t: string; value: number }> }>(
+    request<{
+      period: string;
+      points: Array<{ t: string; sentiment_score: number; sentiment_label: "bullish" | "bearish" | "neutral"; confidence?: number | null }>;
+      loading_state?: "complete" | "partial" | "computing" | "disabled";
+      message?: string | null;
+      data_source?: string;
+      stale?: boolean;
+      last_updated_at?: string | null;
+      data_updated_at?: string | null;
+      eta_hint?: string | null;
+    }>(
       `/api/entities/${entityId}/sentiment-series?period=${encodeURIComponent(period ?? "1M")}`
     ),
 
@@ -522,6 +579,7 @@ export const api = {
         score: number | null;
         label_hint: string | null;
       }>;
+      official_events_available?: boolean;
     }>(
       `/api/entities/${entityId}/price-timeline/points?symbol=${encodeURIComponent(params.symbol)}&period=${encodeURIComponent(params.period)}&chart_scope=${encodeURIComponent(params.chart_scope)}`
     ),
@@ -573,18 +631,27 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  /** Narrative 3D: time × search_trend (0–100) × coverage_volume — from backend, not client mock. */
+  /** Narrative 3D: time × keywords_search_volume × coverage_volume — from backend. */
   getEntityChart3dData: (entityId: string, range?: "1m" | "3m" | "6m") =>
     request<{
       entity_id: string;
       range: string;
       mode: string;
-      points: Array<{ date: string; search_trend: number; coverage_volume: number }>;
-      source_status: { search_trend: string; coverage_volume: string };
+      points: Array<{ date: string; keywords_search_volume: number; coverage_volume: number }>;
+      source_status: { keywords_search_volume: string; coverage_volume: string; target_search_volume?: string };
+      message?: string | null;
     }>(`/api/entities/${entityId}/charts/3d-data?range=${encodeURIComponent(range ?? "1m")}`),
   getEntityMetricSeries: (
     entityId: string,
-    metric: "search_trend" | "coverage_volume" | "sentiment_score" | "momentum" | "acceleration",
+    metric:
+      | "target_search_volume"
+      | "keywords_search_volume"
+      | "coverage_volume"
+      | "sentiment_score"
+      | "momentum_target"
+      | "acceleration_target"
+      | "momentum_keywords"
+      | "acceleration_keywords",
     range?: "1m" | "3m" | "6m"
   ) =>
     request<{
@@ -665,6 +732,37 @@ export const api = {
 
   aiKeywordSuggestions: (p: { idea: string; instrument?: string | null; asset_class?: string | null; portfolio?: string | null }) =>
     request<{ keywords: string[]; ok?: boolean; disabled?: boolean; reason?: string }>("/api/ai/keyword-suggestions", { method: "POST", body: JSON.stringify(p) }),
+
+  aiPriceMoveExplanation: (p: { entity_id: string; window_start: string; window_end: string; chart_period?: string }) =>
+    request<
+      | { disabled?: boolean; ok?: boolean; reason?: string }
+      | {
+          summary: string;
+          drivers: Array<{ label: string; confidence: number; evidence_type: string }>;
+          time_window_start: string;
+          time_window_end: string;
+          cached?: boolean;
+        }
+    >("/api/ai/price-move-explanation", {
+      method: "POST",
+      body: JSON.stringify({ ...p, chart_period: p.chart_period ?? "1M" }),
+    }),
+
+  aiRangeSummary: (p: { entity_id: string; window_start: string; window_end: string; chart_period?: string }) =>
+    request<
+      | { disabled?: boolean; ok?: boolean; reason?: string }
+      | {
+          summary: string;
+          narrative: string;
+          highlights: string[];
+          time_window_start: string;
+          time_window_end: string;
+          cached?: boolean;
+        }
+    >("/api/ai/range-summary", {
+      method: "POST",
+      body: JSON.stringify({ ...p, chart_period: p.chart_period ?? "1M" }),
+    }),
 
   series: (groupId: string, hours = 72) => request<{ group_id: string; points: any[] }>(`/api/indices/series/${groupId}?hours=${hours}`),
 
@@ -757,6 +855,12 @@ export const api = {
       body: JSON.stringify({ asset_type: "index", ...payload }),
     }),
 
+  deleteMarketIndex: (category: string, symbol: string) =>
+    request<{ ok: boolean; deleted: boolean }>(
+      `/api/market/indices?category=${encodeURIComponent(category)}&symbol=${encodeURIComponent(symbol)}`,
+      { method: "DELETE" }
+    ),
+
   macroNews: async (category: string, subcategory?: string | null, limit = 40) => {
     type Item = {
       id: string;
@@ -835,6 +939,22 @@ export const api = {
       message: "Unable to load macro news."
     };
   },
+
+  macroNewsItem: (id: string) =>
+    request<{
+      id: string;
+      title: string;
+      source: string;
+      timestamp: string;
+      url: string | null;
+      category: string;
+      subcategory: string;
+      summary: string | null;
+      sentiment: string | null;
+      impact: number | null;
+      duplicate_count?: number;
+      related_publishers?: string[];
+    }>(`/api/macro/news/${encodeURIComponent(id)}`),
 
   macroEvents: (limit = 50, category?: string | null) =>
     request<

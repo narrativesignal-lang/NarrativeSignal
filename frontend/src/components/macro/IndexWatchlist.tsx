@@ -115,6 +115,8 @@ export function IndexWatchlist({ category }: Props) {
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
+  const [addPending, setAddPending] = useState(false);
+  const [removePendingId, setRemovePendingId] = useState<string | null>(null);
 
   const cacheRef = useRef<Map<string, CategoryCache>>(new Map());
 
@@ -191,6 +193,8 @@ export function IndexWatchlist({ category }: Props) {
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!name.trim() || !symbol.trim()) return;
+      if (addPending) return;
+      setAddPending(true);
       try {
         await api.addMarketIndex({
           category,
@@ -205,14 +209,29 @@ export function IndexWatchlist({ category }: Props) {
       } catch (e2: unknown) {
         console.warn(parseApiError(e2));
         await queryClient.invalidateQueries({ queryKey: ["market", "indices", category] });
+      } finally {
+        setAddPending(false);
       }
     },
-    [category, name, symbol, queryClient]
+    [category, name, symbol, queryClient, addPending]
   );
 
-  const hideRow = useCallback((id: string) => {
-    setHiddenIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-  }, []);
+  const hideRow = useCallback(
+    async (id: string, sym: string) => {
+      if (removePendingId) return;
+      setRemovePendingId(id);
+      setHiddenIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      try {
+        await api.deleteMarketIndex(category, sym);
+      } catch {
+        // Defaults cannot be deleted; keep local hide as best-effort.
+      } finally {
+        await queryClient.invalidateQueries({ queryKey: ["market", "indices", category] });
+        setRemovePendingId(null);
+      }
+    },
+    [category, queryClient, removePendingId]
+  );
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
@@ -221,6 +240,7 @@ export function IndexWatchlist({ category }: Props) {
         <button
           type="button"
           onClick={() => setModalOpen(true)}
+          disabled={addPending}
           className="rounded bg-slate-800 px-2 py-1 text-xs font-medium text-slate-100 hover:bg-slate-700"
         >
           {t("macro.addIndex")}
@@ -259,7 +279,8 @@ export function IndexWatchlist({ category }: Props) {
               />
               <button
                 type="button"
-                onClick={() => hideRow(item.id)}
+                onClick={() => void hideRow(item.id, item.symbol)}
+                disabled={removePendingId === item.id}
                 className="absolute right-2 top-2 rounded p-1 text-slate-500 opacity-0 hover:bg-slate-800 hover:text-red-300 group-hover:opacity-100"
                 title={t("common.remove")}
               >

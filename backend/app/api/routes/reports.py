@@ -26,14 +26,18 @@ def list_reports(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[ReportOut]:
-    stmt = select(Report).where(Report.user_id == current_user.id)
-    if kind:
-        stmt = stmt.where(Report.kind == kind)
-    if label:
-        stmt = stmt.where(Report.label == label)
-    if schedule_type:
-        stmt = stmt.where(Report.schedule_type == schedule_type)
-    reports = db.scalars(stmt.order_by(Report.created_at.desc()).limit(limit)).all()
+    try:
+        stmt = select(Report).where(Report.user_id == current_user.id)
+        if kind:
+            stmt = stmt.where(Report.kind == kind)
+        if label:
+            stmt = stmt.where(Report.label == label)
+        if schedule_type:
+            stmt = stmt.where(Report.schedule_type == schedule_type)
+        reports = db.scalars(stmt.order_by(Report.created_at.desc()).limit(limit)).all()
+    except Exception:
+        # Prefer an honest empty state over a 500 that breaks the whole page.
+        return []
     return [
         ReportOut(
             id=str(r.id),

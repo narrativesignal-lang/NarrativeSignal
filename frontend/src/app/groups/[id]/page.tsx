@@ -29,19 +29,29 @@ export default function GroupPage() {
     (async () => {
       setInitialLoading(true);
       try {
-        const [g, a, arts] = await Promise.all([
-          api.getGroup(groupId),
-          api.getGroupAsset(groupId),
-          api.groupArticles(groupId, 30),
-        ]);
+        const g = await api.getGroup(groupId);
         setGroup(g);
+        const a = await api.getGroupAsset(groupId);
         setAsset(a);
         setSymbolInput(a?.symbol || "");
-        setArticles(arts);
       } catch (e: any) {
         setError(e?.message || "Failed to load group");
       } finally {
         setInitialLoading(false);
+      }
+    })();
+  }, [groupId]);
+
+  useEffect(() => {
+    (async () => {
+      setRefreshingArticles(true);
+      try {
+        const arts = await api.groupArticles(groupId, 30);
+        setArticles(arts);
+      } catch {
+        setArticles(null);
+      } finally {
+        setRefreshingArticles(false);
       }
     })();
   }, [groupId]);

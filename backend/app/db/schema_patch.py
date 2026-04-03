@@ -8,6 +8,92 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
+def _ensure_fk_cascade_postgres(
+    engine,
+    *,
+    table: str,
+    column: str,
+    ref_table: str,
+    ref_column: str = "id",
+) -> None:
+    """
+    Ensure FK(table.column -> ref_table.ref_column) is ON DELETE CASCADE (Postgres only).
+    Safe to run repeatedly; no-op if already cascade.
+    """
+    if getattr(engine.dialect, "name", "") != "postgresql":
+        return
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT con.conname AS name, con.confdeltype AS deltype
+                    FROM pg_constraint con
+                    JOIN pg_class rel ON rel.oid = con.conrelid
+                    JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                    JOIN pg_class refrel ON refrel.oid = con.confrelid
+                    WHERE con.contype = 'f'
+                      AND rel.relname = :table
+                      AND refrel.relname = :ref_table
+                      AND EXISTS (
+                        SELECT 1
+                        FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                        JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = k.attnum
+                        WHERE att.attname = :column
+                      )
+                    LIMIT 1
+                    """
+                ),
+                {"table": table, "ref_table": ref_table, "column": column},
+            ).mappings().first()
+            if not row:
+                return
+            if str(row.get("deltype") or "").lower() == "c":
+                return
+            cname = str(row["name"])
+            conn.execute(text(f'ALTER TABLE "{table}" DROP CONSTRAINT "{cname}"'))
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{table}" '
+                    f'ADD CONSTRAINT "{cname}" FOREIGN KEY ("{column}") '
+                    f'REFERENCES "{ref_table}"("{ref_column}") ON DELETE CASCADE'
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch FK cascade failed %s.%s -> %s.%s: %s", table, column, ref_table, ref_column, e)
+
+
+def ensure_user_owned_fk_cascades(engine) -> None:
+    """
+    User is top-level owner. Ensure clearly user-owned foreign keys cascade on delete.
+    (Postgres-only constraint patch; SQLite/local may require rebuild.)
+    """
+    # Core ownership chain: users -> portfolios -> portfolio_entities -> entity_terms
+    _ensure_fk_cascade_postgres(engine, table="portfolios", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="portfolio_entities", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="portfolio_entities", column="portfolio_id", ref_table="portfolios")
+    _ensure_fk_cascade_postgres(engine, table="entity_terms", column="entity_id", ref_table="portfolio_entities")
+
+    # Other clearly user-owned tables (non-null user_id)
+    _ensure_fk_cascade_postgres(engine, table="reports", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="credit_ledger", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="monitoring_schedules", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="monitoring_runs", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="triggered_alerts", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="research_folders", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="research_projects", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="keyword_groups", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="keyword_group_rss_feeds", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="entity_configs", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="macro_indices", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="macro_categories", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="macro_data_sources", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="entities", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="source_documents", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="community_submissions", column="user_id", ref_table="users")
+    _ensure_fk_cascade_postgres(engine, table="community_data_requests", column="user_id", ref_table="users")
+
 
 def ensure_monitoring_schedule_entity_column(engine) -> None:
     """
@@ -162,6 +248,53 @@ def ensure_entity_daily_metrics_metric_columns(engine) -> None:
             conn.commit()
     except Exception as e:
         logger.warning("Schema patch entity_daily_metrics metric columns failed: %s", e)
+
+
+def ensure_entity_daily_metrics_search_volume_split(engine) -> None:
+    """Target vs narrative Google Trends columns (no mixed search_trend writes going forward)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE entity_daily_metrics "
+                    "ADD COLUMN IF NOT EXISTS target_search_volume DOUBLE PRECISION"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entity_daily_metrics "
+                    "ADD COLUMN IF NOT EXISTS keywords_search_volume DOUBLE PRECISION"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entity_daily_metrics "
+                    "ADD COLUMN IF NOT EXISTS target_search_volume_source VARCHAR(20)"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE entity_daily_metrics "
+                    "ADD COLUMN IF NOT EXISTS keywords_search_volume_source VARCHAR(20)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch entity_daily_metrics search volume split failed: %s", e)
+        return
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "UPDATE entity_daily_metrics SET keywords_search_volume = search_trend, "
+                    "keywords_search_volume_source = COALESCE(NULLIF(TRIM(search_trend_source), ''), 'google_trends') "
+                    "WHERE keywords_search_volume IS NULL AND search_trend IS NOT NULL "
+                    "AND LOWER(COALESCE(search_trend_source, '')) IN ('google_trends', 'real')"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch backfill keywords_search_volume from search_trend failed: %s", e)
 
 
 def ensure_monitoring_schedule_ai_columns(engine) -> None:
@@ -488,9 +621,274 @@ def ensure_active_market_pool_table(engine) -> None:
         logger.warning("Schema patch active_market_pool failed: %s", e)
 
 
+def ensure_market_snapshot_provider_columns(engine) -> None:
+    """Add provider_source columns for quote/ohlcv lineage visibility."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE market_quote_snapshots "
+                    "ADD COLUMN IF NOT EXISTS provider_source VARCHAR(32)"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ohlcv_snapshots "
+                    "ADD COLUMN IF NOT EXISTS provider_source VARCHAR(32)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch market snapshot provider_source columns failed: %s", e)
+
+
+def ensure_entity_analysis_table(engine) -> None:
+    """Massive isolated analysis table (must not leak into display tables)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS entity_analysis (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        entity_id UUID NOT NULL UNIQUE REFERENCES portfolio_entities(id) ON DELETE CASCADE,
+                        event_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        anomaly_flag BOOLEAN NOT NULL DEFAULT FALSE,
+                        narrative_strength DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        last_analysis_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        analysis_source VARCHAR(40) NOT NULL DEFAULT 'massive_light',
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entity_analysis_entity_id ON entity_analysis(entity_id)"))
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch entity_analysis failed: %s", e)
+
+
+def ensure_massive_ai_explanation_cache_table(engine) -> None:
+    """Cache for OpenAI entity chart explanations (legacy table name; not Massive market data)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS massive_ai_explanation_cache (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        entity_id UUID NOT NULL REFERENCES portfolio_entities(id) ON DELETE CASCADE,
+                        feature_type VARCHAR(48) NOT NULL,
+                        fingerprint VARCHAR(64) NOT NULL,
+                        window_start TIMESTAMPTZ NOT NULL,
+                        window_end TIMESTAMPTZ NOT NULL,
+                        payload JSONB NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        model_label VARCHAR(120) NULL,
+                        CONSTRAINT uq_massive_ai_cache_entity_feature_fp UNIQUE (entity_id, feature_type, fingerprint)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_massive_ai_cache_entity ON massive_ai_explanation_cache(entity_id)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_massive_ai_cache_feature ON massive_ai_explanation_cache(feature_type)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_massive_ai_cache_fp ON massive_ai_explanation_cache(fingerprint)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_massive_ai_cache_expires ON massive_ai_explanation_cache(expires_at)")
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch massive_ai_explanation_cache failed: %s", e)
+
+
+def ensure_entity_triple_signal_daily_table(engine) -> None:
+    """Triple signal normalized metrics table per entity/day."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS entity_triple_signal_daily (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        entity_id UUID NOT NULL REFERENCES portfolio_entities(id) ON DELETE CASCADE,
+                        metric_date DATE NOT NULL,
+                        trading_activity DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        news_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        search_volume DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        last_updated TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        CONSTRAINT uq_entity_triple_signal_day UNIQUE (entity_id, metric_date)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_entity_triple_signal_daily_entity_date ON entity_triple_signal_daily(entity_id, metric_date)")
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch entity_triple_signal_daily failed: %s", e)
+
+
+def ensure_massive_backfill_queue_table(engine) -> None:
+    """Queue for MassiveBackfillLoop (low-frequency market data backfill)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS massive_backfill_queue (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        entity_id UUID NULL,
+                        symbol VARCHAR(40) NOT NULL,
+                        asset_class VARCHAR(24) NULL,
+                        need_quote BOOLEAN NOT NULL DEFAULT FALSE,
+                        need_ohlcv BOOLEAN NOT NULL DEFAULT FALSE,
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        source_reason VARCHAR(40) NULL,
+                        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        last_attempt_at TIMESTAMPTZ NULL,
+                        next_attempt_at TIMESTAMPTZ NULL,
+                        provider_last_used VARCHAR(40) NULL,
+                        last_error TEXT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        CONSTRAINT uq_massive_backfill_symbol_need UNIQUE (symbol, need_quote, need_ohlcv)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_massive_backfill_queue_symbol ON massive_backfill_queue(symbol)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_massive_backfill_queue_status ON massive_backfill_queue(status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_massive_backfill_queue_next_attempt ON massive_backfill_queue(next_attempt_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_massive_backfill_queue_entity ON massive_backfill_queue(entity_id)"))
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch massive_backfill_queue failed: %s", e)
+
+
+def ensure_system_runtime_flags_table(engine) -> None:
+    """Admin-controlled runtime flags (no restart needed)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS system_runtime_flags (
+                        key VARCHAR(80) PRIMARY KEY,
+                        value_bool BOOLEAN NOT NULL DEFAULT FALSE,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_by VARCHAR(80) NULL
+                    )
+                    """
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch system_runtime_flags failed: %s", e)
+
+
+def ensure_system_runtime_logs_table(engine) -> None:
+    """Tiny admin-visible runtime log buffer (bounded; not a full logging system)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS system_runtime_logs (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        level VARCHAR(16) NOT NULL DEFAULT 'info',
+                        category VARCHAR(24) NOT NULL DEFAULT 'system',
+                        job_name VARCHAR(80) NULL,
+                        provider VARCHAR(40) NULL,
+                        status VARCHAR(16) NULL,
+                        message TEXT NOT NULL DEFAULT '',
+                        disabled_by_runtime_flag BOOLEAN NOT NULL DEFAULT FALSE,
+                        no_provider_call BOOLEAN NOT NULL DEFAULT FALSE,
+                        request_count INTEGER NULL,
+                        fallback_count INTEGER NULL,
+                        symbol_count INTEGER NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_system_runtime_logs_created_at ON system_runtime_logs(created_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_system_runtime_logs_category ON system_runtime_logs(category)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_system_runtime_logs_level ON system_runtime_logs(level)"))
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch system_runtime_logs failed: %s", e)
+
+
+def ensure_normalized_news_unique_url(engine) -> None:
+    """Prevent duplicate normalized docs by canonical_url (safe when table is empty/small)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_normalized_news_canonical_url "
+                    "ON normalized_news_documents (canonical_url)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch normalized_news_documents unique url failed: %s", e)
+
+
+def ensure_entity_sentiment_baselines_table(engine) -> None:
+    """Cache baseline tone per entity+window (for incremental sentiment series)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS entity_sentiment_baselines (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        entity_id UUID NOT NULL REFERENCES portfolio_entities(id) ON DELETE CASCADE,
+                        window_start DATE NOT NULL,
+                        window_end DATE NOT NULL,
+                        bucket_step_days INTEGER NOT NULL DEFAULT 7,
+                        baseline_score DOUBLE PRECISION NOT NULL,
+                        baseline_label VARCHAR(16) NOT NULL,
+                        confidence DOUBLE PRECISION NULL,
+                        provider VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                        model VARCHAR(64) NOT NULL DEFAULT 'v1',
+                        computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        UNIQUE(entity_id, window_start, window_end, bucket_step_days)
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entity_sentiment_baselines_entity_id ON entity_sentiment_baselines(entity_id)"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_entity_sentiment_baseline_entity_window "
+                    "ON entity_sentiment_baselines(entity_id, window_start, window_end)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("Schema patch entity_sentiment_baselines failed: %s", e)
 def run_schema_patches(engine) -> None:
     """Run all startup-safe schema patches. Call from API and worker startup."""
     ensure_active_market_pool_table(engine)
+    ensure_market_snapshot_provider_columns(engine)
+    ensure_entity_analysis_table(engine)
+    ensure_massive_ai_explanation_cache_table(engine)
+    ensure_entity_triple_signal_daily_table(engine)
+    ensure_massive_backfill_queue_table(engine)
+    ensure_system_runtime_flags_table(engine)
+    ensure_system_runtime_logs_table(engine)
+    ensure_normalized_news_unique_url(engine)
+    ensure_entity_sentiment_baselines_table(engine)
     ensure_macro_news_list_snapshots_table(engine)
     ensure_users_plan_and_ai_level_columns(engine)
     ensure_users_paid_access_column(engine)
@@ -508,4 +906,6 @@ def run_schema_patches(engine) -> None:
     ensure_research_setup_snapshot_name(engine)
     ensure_entity_daily_metrics_timestamps(engine)
     ensure_entity_daily_metrics_metric_columns(engine)
+    ensure_entity_daily_metrics_search_volume_split(engine)
     ensure_macro_events_lifecycle_columns(engine)
+    ensure_user_owned_fk_cascades(engine)

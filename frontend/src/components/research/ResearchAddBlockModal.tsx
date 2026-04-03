@@ -3,82 +3,87 @@
 import { useEffect, useState } from "react";
 
 import { useI18n } from "@/lib/i18n";
-import { useUser } from "@/lib/UserContext";
 import { CHART_LABELS, type ChartType } from "./ResearchChart";
-
-const PREMIUM_RESEARCH_TYPES: ChartType[] = ["institution_bias", "rating_distribution"];
-import type { TabSetup } from "./researchTypes";
-
-const OVERLAY_TYPES: ChartType[] = [
-  "asset_price",
-  "sentiment",
-  "momentum",
-  "coverage",
-  "custom_index",
-];
-
-const SPLIT_TYPES: ChartType[] = [...OVERLAY_TYPES];
-
-const ANALYSIS_TYPES: ChartType[] = [
-  "three_d",
-  "three_d_narrative",
-  "three_d_derivative",
-  "institution_bias",
-  "rating_distribution",
-];
-
-type Kind = "overlay" | "single" | "analysis";
+import {
+  RESEARCH_ANALYSIS_CHART_TYPES,
+  RESEARCH_OVERLAY_CHART_TYPES,
+  RESEARCH_SPLIT_CHART_TYPES,
+} from "./researchBlockRegistry";
+type KindTab = "overlay" | "single" | "analysis";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  onAdd: (type: ChartType, kind: Kind) => void;
-  setup: TabSetup;
+  onAddOverlay: (types: ChartType[]) => void;
+  onAddSingle: (type: ChartType, kind: "single" | "analysis") => void;
   hasResearchTarget: boolean;
 };
 
 export function ResearchAddBlockModal({
   open,
   onClose,
-  onAdd,
-  setup,
+  onAddOverlay,
+  onAddSingle,
   hasResearchTarget,
 }: Props) {
   const { t } = useI18n();
-  const { user } = useUser();
-  const isAdmin = user?.is_admin ?? false;
-  const [kind, setKind] = useState<Kind>("single");
-  const KIND_LABELS: Record<Kind, string> = {
+  const [kind, setKind] = useState<KindTab>("single");
+  const KIND_LABELS: Record<KindTab, string> = {
     overlay: t("workspace.overlayChart"),
     single: t("workspace.splitChart"),
     analysis: t("workspace.analysis"),
   };
-  const [type, setType] = useState<ChartType | null>(null);
+  const [overlaySelected, setOverlaySelected] = useState<Set<ChartType>>(new Set());
+  const [splitType, setSplitType] = useState<ChartType | null>(null);
+  const [analysisType, setAnalysisType] = useState<ChartType | null>(null);
 
   useEffect(() => {
     if (open) {
       setKind("single");
-      setType(null);
+      setOverlaySelected(new Set());
+      setSplitType(null);
+      setAnalysisType(null);
     }
   }, [open]);
 
   if (!open) return null;
 
-  const typesForKind =
-    kind === "overlay"
-      ? OVERLAY_TYPES
-      : kind === "single"
-        ? SPLIT_TYPES
-        : ANALYSIS_TYPES;
+  const toggleOverlay = (ct: ChartType) => {
+    setOverlaySelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(ct)) n.delete(ct);
+      else n.add(ct);
+      return n;
+    });
+  };
 
-  const handleAdd = () => {
-    if (!type) return;
-    if (PREMIUM_RESEARCH_TYPES.includes(type) && !isAdmin) return;
-    onAdd(type, kind);
-    setType(null);
-    setKind("single");
+  const newOverlayPicks = [...overlaySelected];
+  const canAddOverlay = hasResearchTarget && newOverlayPicks.length > 0;
+
+  const handleOverlayAdd = () => {
+    if (!canAddOverlay) return;
+    onAddOverlay(newOverlayPicks);
+    setOverlaySelected(new Set());
     onClose();
   };
+
+  const handleSplitAdd = () => {
+    if (!splitType || !hasResearchTarget) return;
+    onAddSingle(splitType, "single");
+    setSplitType(null);
+    onClose();
+  };
+
+  const handleAnalysisAdd = () => {
+    if (!analysisType || !hasResearchTarget) return;
+    onAddSingle(analysisType, "analysis");
+    setAnalysisType(null);
+    onClose();
+  };
+
+  const emptyOverlay = RESEARCH_OVERLAY_CHART_TYPES.length === 0;
+  const emptySplit = RESEARCH_SPLIT_CHART_TYPES.length === 0;
+  const emptyAnalysis = RESEARCH_ANALYSIS_CHART_TYPES.length === 0;
 
   return (
     <div
@@ -93,9 +98,7 @@ export function ResearchAddBlockModal({
         </h2>
 
         {!hasResearchTarget ? (
-          <p className="mt-2 text-sm text-amber-200/90">
-            {t("workspace.noResearchTarget")}
-          </p>
+          <p className="mt-2 text-sm text-amber-200/90">{t("workspace.noResearchTarget")}</p>
         ) : null}
 
         <div className="mt-3 flex flex-wrap gap-1">
@@ -105,7 +108,8 @@ export function ResearchAddBlockModal({
               type="button"
               onClick={() => {
                 setKind(k);
-                setType(null);
+                setSplitType(null);
+                setAnalysisType(null);
               }}
               className={`rounded border px-2 py-1 text-xs font-medium transition ${
                 kind === k
@@ -119,46 +123,93 @@ export function ResearchAddBlockModal({
         </div>
 
         {kind === "overlay" ? (
-          <p className="mt-2 text-xs text-slate-400">
-            {t("workspace.sameTimelineNote")}
-          </p>
+          <>
+            <p className="mt-2 text-xs text-slate-400">{t("workspace.overlayTabHint")}</p>
+            <p className="mt-1 text-[11px] text-slate-500">{t("workspace.sameTimelineNote")}</p>
+            <p className="mt-2 text-xs font-medium text-slate-300">
+              {t("workspace.overlaySelectedCount", { count: overlaySelected.size })}
+            </p>
+          </>
         ) : null}
 
         <ul className="mt-3 space-y-2">
-          {typesForKind.map((chartType) => {
-            const isPremium = PREMIUM_RESEARCH_TYPES.includes(chartType);
-            const disabled = isPremium && !isAdmin;
-            return (
+          {kind === "overlay" ? (
+            emptyOverlay ? (
+              <li className="rounded border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-400">
+                {t("workspace.modalNoOverlayOptions")}
+              </li>
+            ) : (
+              RESEARCH_OVERLAY_CHART_TYPES.map((chartType) => (
+                <li key={chartType}>
+                  <label
+                    className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      !hasResearchTarget
+                        ? "cursor-not-allowed border-slate-700 bg-slate-900/60 text-slate-500 opacity-70"
+                        : "border-slate-600 bg-slate-800/60 text-slate-200 hover:border-slate-500"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      disabled={!hasResearchTarget}
+                      checked={overlaySelected.has(chartType)}
+                      onChange={() => hasResearchTarget && toggleOverlay(chartType)}
+                      aria-label={CHART_LABELS[chartType]}
+                    />
+                    <span className="font-medium">{CHART_LABELS[chartType]}</span>
+                  </label>
+                </li>
+              ))
+            )
+          ) : kind === "single" ? (
+            emptySplit ? (
+              <li className="rounded border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-400">
+                {t("workspace.modalNoSplitOptions")}
+              </li>
+            ) : (
+              RESEARCH_SPLIT_CHART_TYPES.map((chartType) => (
+                <li key={chartType}>
+                  <button
+                    type="button"
+                    disabled={!hasResearchTarget}
+                    onClick={() => hasResearchTarget && setSplitType(chartType)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
+                      splitType === chartType
+                        ? "border-indigo-500 bg-indigo-900/30 text-indigo-100"
+                        : !hasResearchTarget
+                          ? "cursor-not-allowed border-slate-700 bg-slate-900/60 text-slate-500 opacity-70"
+                          : "border-slate-600 bg-slate-800/60 text-slate-300 hover:border-slate-500 hover:bg-slate-800"
+                    }`}
+                  >
+                    {CHART_LABELS[chartType]}
+                  </button>
+                </li>
+              ))
+            )
+          ) : emptyAnalysis ? (
+            <li className="rounded border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-400">
+              {t("workspace.modalNoAnalysisOptions")}
+            </li>
+          ) : (
+            RESEARCH_ANALYSIS_CHART_TYPES.map((chartType) => (
               <li key={chartType}>
                 <button
                   type="button"
-                  disabled={disabled}
-                  onClick={() => !disabled && setType(chartType)}
+                  disabled={!hasResearchTarget}
+                  onClick={() => hasResearchTarget && setAnalysisType(chartType)}
                   className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                    type === chartType
+                    analysisType === chartType
                       ? "border-indigo-500 bg-indigo-900/30 text-indigo-100"
-                      : disabled
+                      : !hasResearchTarget
                         ? "cursor-not-allowed border-slate-700 bg-slate-900/60 text-slate-500 opacity-70"
                         : "border-slate-600 bg-slate-800/60 text-slate-300 hover:border-slate-500 hover:bg-slate-800"
                   }`}
                 >
-                  <span>
-                    {CHART_LABELS[chartType]}
-                    {isPremium && !isAdmin && (
-                      <span className="ml-2 rounded bg-amber-900/40 px-2 py-0.5 text-[10px] text-amber-200">
-                        {t("schedules.comingUp")}
-                      </span>
-                    )}
-                  </span>
-                  {isPremium && !isAdmin && (
-                    <span className="block mt-0.5 text-[11px] text-amber-300/80">
-                      {t("schedules.premiumPlanned")}
-                    </span>
-                  )}
+                  {CHART_LABELS[chartType]}
                 </button>
               </li>
-            );
-          })}
+            ))
+          )}
         </ul>
 
         <div className="mt-4 flex justify-end gap-2">
@@ -169,14 +220,36 @@ export function ResearchAddBlockModal({
           >
             {t("common.cancel")}
           </button>
-          <button
-            type="button"
-            onClick={handleAdd}
-            disabled={!type || !hasResearchTarget || (type && PREMIUM_RESEARCH_TYPES.includes(type) && !isAdmin)}
-            className="rounded bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {t("common.add")}
-          </button>
+          {kind === "overlay" ? (
+            <button
+              type="button"
+              onClick={handleOverlayAdd}
+              disabled={!canAddOverlay}
+              className="rounded bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("common.add")}
+            </button>
+          ) : null}
+          {kind === "single" ? (
+            <button
+              type="button"
+              onClick={handleSplitAdd}
+              disabled={!splitType || !hasResearchTarget}
+              className="rounded bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("common.add")}
+            </button>
+          ) : null}
+          {kind === "analysis" ? (
+            <button
+              type="button"
+              onClick={handleAnalysisAdd}
+              disabled={!analysisType || !hasResearchTarget}
+              className="rounded bg-indigo-600 px-3 py-2 text-sm text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {t("common.add")}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

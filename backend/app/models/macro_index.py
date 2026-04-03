@@ -14,7 +14,9 @@ class MacroIndex(Base):
     __tablename__ = "macro_indices"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     category: Mapped[str] = mapped_column(String(80), nullable=False, index=True, server_default="general")
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     symbol: Mapped[str] = mapped_column(String(60), nullable=False)

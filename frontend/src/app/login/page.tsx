@@ -131,7 +131,7 @@ function LoginPageContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<main className="mx-auto max-w-md p-6"><div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6 text-slate-400">Loading…</div></main>}>
+    <Suspense fallback={<main className="mx-auto max-w-md p-6"><div className="rounded-xl border border-slate-800 bg-slate-900/30 p-6 text-slate-400">Loading data...</div></main>}>
       <LoginPageContent />
     </Suspense>
   );

@@ -21,7 +21,7 @@ celery_app.conf.update(
     beat_schedule={
         "tick-schedules-every-minute": {
             "task": "app.worker.tasks.tick_schedules",
-            "schedule": crontab(minute="*/1"),
+            "schedule": crontab(minute="*/10"),
         },
         "daily-info-report-0705-ny": {
             "task": "app.worker.tasks.generate_daily_reports",
@@ -31,14 +31,14 @@ celery_app.conf.update(
             "task": "app.worker.tasks.fetch_macro_news",
             "schedule": crontab(minute="*/15"),
         },
-        # Google News list for Macro tab (DB snapshot); light interval for dev.
-        "refresh-macro-news-list-snapshots-12m": {
+        # Google News list for Macro tab (DB snapshot); practical recurring cadence.
+        "refresh-macro-news-list-snapshots-15m": {
             "task": "app.worker.tasks.refresh_macro_news_list_snapshots",
-            "schedule": crontab(minute="2,14,26,38,50"),
-        },
-        "refresh-market-quotes-every-15-min": {
-            "task": "app.worker.tasks.refresh_market_quotes",
             "schedule": crontab(minute="*/15"),
+        },
+        "refresh-market-quotes-every-20-min": {
+            "task": "app.worker.tasks.refresh_market_quotes",
+            "schedule": crontab(minute="*/20"),
         },
         # Twelve fixed warm pool: Redis + DB snapshots for validated symbols only (conservative credits).
         "warm-pool-twelve-quotes-15m": {
@@ -50,9 +50,9 @@ celery_app.conf.update(
             "schedule": crontab(minute="5"),
         },
         # Twelve dynamic active pool (global): separate from fixed warm pool list + schedules.
-        "active-pool-twelve-quotes-30m": {
+        "active-pool-twelve-quotes-15m": {
             "task": "app.worker.tasks.refresh_active_pool_twelve_quotes",
-            "schedule": crontab(minute="8,38"),
+            "schedule": crontab(minute="*/15"),
         },
         "active-pool-twelve-time-series-1m-2h": {
             "task": "app.worker.tasks.refresh_active_pool_twelve_time_series_1m",
@@ -63,14 +63,36 @@ celery_app.conf.update(
             "task": "app.worker.tasks.refresh_market_ohlcv_snapshots",
             "schedule": crontab(minute="25", hour="*/6"),
         },
+        # Search trend (pytrends): production-safe cadence; idempotent upserts per entity.
         "sync-entity-daily-metrics-daily-0210-ny": {
             "task": "app.worker.tasks.sync_entity_daily_metrics",
             "schedule": crontab(minute="10", hour="2"),
+        },
+        "refresh-normalized-entity-news-30m": {
+            "task": "app.worker.tasks.refresh_normalized_entity_news",
+            "schedule": crontab(minute="*/30"),
         },
         # Retention / ephemeral data (see app.services.retention_cleanup RETENTION_RULES)
         "retention-cleanup-v1-daily-0430-ny": {
             "task": "app.worker.tasks.retention_cleanup_v1",
             "schedule": crontab(minute="30", hour="4"),
+        },
+        "refresh-triple-signal-metrics-30m": {
+            "task": "app.worker.tasks.refresh_triple_signal_metrics",
+            "schedule": crontab(minute="*/30"),
+        },
+        "massive-analysis-light-job-5m": {
+            "task": "app.worker.tasks.massive_analysis_light_job",
+            "schedule": crontab(minute="*/5"),
+        },
+        # Massive: explicit queue backfill (low frequency); repair scan handles rolling freshness.
+        "massive-backfill-loop-30m": {
+            "task": "app.worker.tasks.massive_backfill_loop",
+            "schedule": crontab(minute="*/30"),
+        },
+        "massive-market-repair-scan-10m": {
+            "task": "app.worker.tasks.massive_market_repair_scan",
+            "schedule": crontab(minute="*/10"),
         },
     },
 )

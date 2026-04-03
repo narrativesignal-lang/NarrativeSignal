@@ -53,12 +53,13 @@ const META: FlagMeta[] = [
   { key: "ENABLE_FETCH_MACRO_NEWS", group: "News / Trends / Warmups", label: "Macro news fetch", description: "Allow macro news fetching/refresh tasks." },
   { key: "ENABLE_STARTUP_WARMUPS", group: "News / Trends / Warmups", label: "Startup warmups", description: "Allow API-process startup warmups (may call external providers in background)." },
 
-  { key: "ENABLE_MASSIVE_BACKFILL", group: "Jobs / Schedules", label: "Massive backfill loop", description: "Allow MassiveBackfillLoop to process the queue (still requires MASSIVE_API_KEY)." },
-  { key: "ENABLE_MASSIVE_ANALYSIS", group: "Jobs / Schedules", label: "Massive analysis job", description: "Allow the isolated Massive analysis job (writes analysis tables only)." },
+  { key: "ENABLE_MASSIVE_BACKFILL", group: "Jobs / Schedules", label: "Massive market repair (background)", description: "Enables the rolling repair scan (sole Massive API path). Backfill job does not call Massive; hard quotas apply in massive_api_client." },
+  { key: "ENABLE_MASSIVE_ANALYSIS", group: "Jobs / Schedules", label: "Narrative heuristic analysis job", description: "Allow scheduled entity_analysis upserts from stored metrics (no Massive API)." },
 
   { key: "ENABLE_AI_FEATURES", group: "AI Features", label: "Global AI features", description: "Global kill switch for all AI features. When off, no AI provider calls happen." },
   { key: "ENABLE_AI_KEYWORD_SUGGESTIONS", group: "AI Features", label: "AI: keyword suggestions", description: "Enable POST /api/ai/keyword-suggestions (Gemini role=verify)." },
   { key: "ENABLE_AI_TIMELINE_SUMMARY", group: "AI Features", label: "AI: timeline summary", description: "Enable timeline AI summary endpoint. When off, returns structured disabled payload." },
+  { key: "ENABLE_AI_RANGE_ANALYSIS", group: "AI Features", label: "AI: range summary", description: "Enable POST /api/ai/range-summary (OpenAI; stored context only)." },
   { key: "ENABLE_AI_REPORT_GENERATION", group: "AI Features", label: "AI: report generation", description: "Enable AI report schedule pipeline." },
   { key: "ENABLE_AI_ALERTS", group: "AI Features", label: "AI: alerts", description: "Enable AI alert schedule pipeline." },
   { key: "ENABLE_AI_DOCUMENT_ANALYSIS", group: "AI Features", label: "AI: document analysis", description: "Enable document analysis LLM calls." },
@@ -200,7 +201,7 @@ export default function AdminRuntimeFlagsPage() {
         <p className="mt-1 text-sm text-slate-400">Toggle flags live. No restart required. Schedules keep their natural next run.</p>
 
         {loading ? (
-          <p className="mt-6 text-sm text-slate-500">Loading…</p>
+          <p className="mt-6 text-sm text-slate-500">Loading data...</p>
         ) : error ? (
           <div className="mt-6 rounded border border-red-900/50 bg-red-950/20 px-4 py-2 text-sm text-red-200">{error}</div>
         ) : (
@@ -326,7 +327,7 @@ export default function AdminRuntimeFlagsPage() {
                   <div className="rounded border border-red-900/50 bg-red-950/20 px-3 py-2 text-xs text-red-200">{logsError}</div>
                 ) : null}
                 {logsLoading ? (
-                  <div className="text-xs text-slate-500">Loading…</div>
+                  <div className="text-xs text-slate-500">Loading data...</div>
                 ) : logs.length === 0 ? (
                   <div className="text-xs text-slate-500">No recent logs yet.</div>
                 ) : (

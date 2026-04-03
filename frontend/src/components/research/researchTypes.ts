@@ -1,4 +1,4 @@
-import type { ChartType } from "./ResearchChart";
+import { CHART_TYPES as RESEARCH_CHART_TYPES, type ChartType } from "./ResearchChart";
 
 /** Research Universe / Scope for one tab: multiple instruments, terms, entity. */
 export type TabSetup = {
@@ -24,6 +24,8 @@ export type PanelConfig = {
   type: ChartType;
   /** overlay = overlay chart (multi-series); single = standalone; analysis = 2D/3D/relationship. */
   kind?: "overlay" | "single" | "analysis";
+  /** When kind is overlay: multiple compatible series in one panel (persisted). */
+  overlayTypes?: ChartType[];
 };
 
 /** One research tab: title, scope, blocks. */
@@ -44,19 +46,8 @@ export type LayoutConfig = {
   setup?: TabSetup;
 };
 
-const CHART_TYPES = [
-  "asset_price",
-  "sentiment",
-  "momentum",
-  "coverage",
-  "custom_index",
-  "three_d",
-  "three_d_narrative",
-  "three_d_derivative",
-] as const;
-
 function isChartType(s: string): s is ChartType {
-  return (CHART_TYPES as readonly string[]).includes(s);
+  return (RESEARCH_CHART_TYPES as readonly string[]).includes(s);
 }
 
 function isPanelConfig(x: unknown): x is PanelConfig {
@@ -65,6 +56,12 @@ function isPanelConfig(x: unknown): x is PanelConfig {
   const type = o.type;
   if (typeof type !== "string" || !isChartType(type)) return false;
   if (o.kind !== undefined && !["overlay", "single", "analysis"].includes(String(o.kind))) return false;
+  if (o.overlayTypes !== undefined) {
+    if (!Array.isArray(o.overlayTypes)) return false;
+    for (const t of o.overlayTypes) {
+      if (typeof t !== "string" || !isChartType(t)) return false;
+    }
+  }
   return true;
 }
 

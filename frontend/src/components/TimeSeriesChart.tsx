@@ -3,6 +3,7 @@
 type Point = { t: string; value: number };
 
 const LINE_COLOR = "#818cf8";
+// NOTE: Empty-state messaging is handled by parent blocks via BlockStateMessage for consistency.
 
 export function TimeSeriesChart({
   points,
@@ -17,7 +18,7 @@ export function TimeSeriesChart({
         className="flex items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500"
         style={{ height }}
       >
-        No data
+        —
       </div>
     );
   }

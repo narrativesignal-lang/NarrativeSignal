@@ -6,7 +6,7 @@ export type Chart3DRange = "1m" | "3m" | "6m";
 
 export type EntityChart3DPoint = {
   date: string;
-  search_trend: number;
+  keywords_search_volume: number;
   coverage_volume: number;
 };
 
@@ -17,23 +17,26 @@ export type EntityChart3DData = {
   points: EntityChart3DPoint[];
   last_updated_at?: string | null;
   stale?: boolean;
+  message?: string | null;
   source_status: {
-    search_trend: "mock" | "real" | "mock_fallback";
-    coverage_volume: "mock" | "real";
+    keywords_search_volume: string;
+    coverage_volume: string;
+    target_search_volume?: string;
   };
 };
 
 /**
  * Map API points to scene coordinates:
- * X = time index (chronological), Y = search_trend (0–100 → height), Z = coverage (normalized).
+ * X = time index, Y = normalized narrative keywords aggregate (height), Z = coverage (normalized).
  */
 export function pointsToScenePath(points: EntityChart3DPoint[]): [number, number, number][] {
   if (!points.length) return [];
   const maxCov = Math.max(...points.map((p) => p.coverage_volume), 1e-6);
+  const maxKw = Math.max(...points.map((p) => p.keywords_search_volume), 1e-6);
   const n = points.length;
   return points.map((p, i) => {
     const x = n <= 1 ? 0 : (i / (n - 1)) * 4 - 2;
-    const y = (p.search_trend / 100) * 2;
+    const y = (p.keywords_search_volume / maxKw) * 2;
     const z = (p.coverage_volume / maxCov) * 4 - 2;
     return [x, y, z] as [number, number, number];
   });

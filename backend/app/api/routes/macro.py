@@ -12,7 +12,7 @@ from app.db.session import get_db
 from app.models.macro_category import MacroCategory
 from app.models.macro_event import MacroEvent
 from app.models.user import User
-from app.schemas.macro import MacroCategoryCreate, MacroCategoryOut, MacroEventOut, MacroNewsListResponse
+from app.schemas.macro import MacroCategoryCreate, MacroCategoryOut, MacroEventOut, MacroNewsItemOut, MacroNewsListResponse
 from app.services.core_data_diag import (
     record_cold_empty,
     record_fallback,
@@ -81,7 +81,19 @@ def list_macro_news(
     if cat not in {"general", "stock", "futures", "crypto"}:
         raise HTTPException(status_code=400, detail="Unsupported macro category")
 
-    snap = read_snapshot_for_request(db, category=cat, subcategory=subcategory, limit=limit)
+    try:
+        snap = read_snapshot_for_request(db, category=cat, subcategory=subcategory, limit=limit)
+    except Exception:
+        logger.exception("macro news: snapshot read failed category=%s subcategory=%s", cat, subcategory)
+        record_first_paint_envelope("macro_news", loading_state="placeholder", data_source="placeholder")
+        return MacroNewsListResponse(
+            data=[],
+            data_updated_at=None,
+            data_source="placeholder",
+            stale=True,
+            loading_state="placeholder",
+            message="Macro news is temporarily unavailable (snapshot read failed). Check server logs and DB state.",
+        )
     if snap is not None:
         record_snapshot_hit("macro_news")
         if snap.items:
@@ -110,7 +122,19 @@ def list_macro_news(
     response.headers["X-Macro-News-Source"] = "pending-refresh"
     response.headers["X-Macro-News-Stale"] = "true"
     _schedule_macro_news_snapshot_refresh()
-    items, lu, ds, ls, msg = resolve_macro_news_fallback(cat, subcategory, limit)
+    try:
+        items, lu, ds, ls, msg = resolve_macro_news_fallback(cat, subcategory, limit)
+    except Exception:
+        logger.exception("macro news: fallback resolve failed category=%s subcategory=%s", cat, subcategory)
+        record_first_paint_envelope("macro_news", loading_state="placeholder", data_source="placeholder")
+        return MacroNewsListResponse(
+            data=[],
+            data_updated_at=None,
+            data_source="placeholder",
+            stale=True,
+            loading_state="placeholder",
+            message="Macro news is temporarily unavailable (fallback failed).",
+        )
     if not items:
         record_cold_empty("macro_news")
         record_first_paint_envelope("macro_news", loading_state="warming", data_source="placeholder")
@@ -131,6 +155,41 @@ def list_macro_news(
         loading_state=ls,
         message=msg,
     )
+
+
+@router.get("/news/{item_id}", response_model=MacroNewsItemOut)
+def get_macro_news_item(
+    item_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MacroNewsItemOut:
+    """
+    Fetch a single macro news item by id for deep links (/news/[id]).
+
+    Reads DB snapshots only. If the item is not present in snapshots, returns 404.
+    """
+    _ = current_user  # auth required; user isolation is not needed for shared macro snapshots
+    iid = (item_id or "").strip()
+    if not iid:
+        raise HTTPException(status_code=400, detail="Missing item id")
+
+    # Scan existing snapshot rows across categories (small fixed set).
+    from app.models.macro_news_list_snapshot import MacroNewsListSnapshot
+    from app.services.macro_news_snapshot import _row_to_out, SNAPSHOT_CATEGORIES
+
+    rows = db.scalars(select(MacroNewsListSnapshot).where(MacroNewsListSnapshot.category.in_(SNAPSHOT_CATEGORIES))).all()
+    for r in rows:
+        raw_list = r.items if isinstance(r.items, list) else []
+        for row in raw_list:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("id") or "") != iid:
+                continue
+            out = _row_to_out(row, category_fallback=str(r.category))
+            if out:
+                return out
+
+    raise HTTPException(status_code=404, detail="News item not found (not in snapshots yet)")
 
 
 @router.get("/categories", response_model=list[MacroCategoryOut])

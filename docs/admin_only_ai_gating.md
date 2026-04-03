@@ -7,7 +7,8 @@ These paths may invoke **OpenAI**, **Google Gemini**, or future paid LLM APIs, o
 | Feature | Backend |
 |--------|---------|
 | Keyword suggestions | `POST /api/ai/keyword-suggestions` → `api/routes/ai_routes.py` |
-| Entity price-timeline AI summary | `POST /api/entities/{id}/price-timeline/ai-summary` → `api/routes/portfolios.py` |
+| Entity price-timeline AI summary | `POST /api/entities/{id}/price-timeline/ai-summary` → `api/routes/portfolios.py` (`FeatureKey.TIMELINE_AI_SUMMARY`) |
+| Entity AI sentiment series (overlay) | `GET /api/entities/{id}/sentiment-series` → `FeatureKey.ENTITY_SENTIMENT_AI` (LIGHT_AI) |
 | Document AI analysis | `app.services.ai.service.analyze_documents` (OpenAI/Gemini via `get_provider`) |
 | AI alert / AI report / general alert schedules | Types `ai_alert`, `ai_report`, `general_alert` → `worker/tasks.py`, `services/ai_alert.py` |
 

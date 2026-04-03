@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { SectionHelp } from "@/components/SectionHelp";
@@ -56,6 +56,7 @@ export function EntityEventTimeline({
   const { t } = useI18n();
   const panelId = useId();
   const [officialPoints, setOfficialPoints] = useState<TimelinePointBuilt[]>([]);
+  const [officialFeedAvailable, setOfficialFeedAvailable] = useState(false);
   const [access, setAccess] = useState<TimelineAccess | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -67,6 +68,7 @@ export function EntityEventTimeline({
   const [windowData, setWindowData] = useState<Awaited<ReturnType<typeof api.getEntityPriceTimelineWindow>> | null>(
     null
   );
+  const windowReqIdRef = useRef(0);
 
   const [provider, setProvider] = useState<(typeof PROVIDERS)[number]["id"]>("gemini");
   const [summaryWindow, setSummaryWindow] = useState<SummaryWindowKey>("point");
@@ -86,10 +88,12 @@ export function EntityEventTimeline({
         chart_scope: chartScope,
       });
       setOfficialPoints(res.points.filter((p) => p.point_type === "official"));
+      setOfficialFeedAvailable(Boolean(res.official_events_available));
       setAccess(res.access);
     } catch (e) {
       setLoadErr(parseApiError(e));
       setOfficialPoints([]);
+      setOfficialFeedAvailable(false);
       setAccess(null);
     } finally {
       setLoading(false);
@@ -128,6 +132,8 @@ export function EntityEventTimeline({
 
   const openPoint = useCallback(
     async (pointId: string) => {
+      if (windowLoading) return;
+      const reqId = ++windowReqIdRef.current;
       setSelectedId(pointId);
       setPanelOpen(true);
       setWindowErr(null);
@@ -137,15 +143,15 @@ export function EntityEventTimeline({
       setWindowLoading(true);
       try {
         const w = await api.getEntityPriceTimelineWindow(entityId, pointId);
-        setWindowData(w);
+        if (reqId === windowReqIdRef.current) setWindowData(w);
       } catch (e: unknown) {
         const msg = parseApiError(e);
-        setWindowErr(msg);
+        if (reqId === windowReqIdRef.current) setWindowErr(msg);
       } finally {
-        setWindowLoading(false);
+        if (reqId === windowReqIdRef.current) setWindowLoading(false);
       }
     },
-    [entityId]
+    [entityId, windowLoading]
   );
 
   const closePanel = useCallback(() => {
@@ -444,12 +450,17 @@ export function EntityEventTimeline({
             <span className="h-2 w-2 rounded-full bg-amber-400" aria-hidden />
             {t("timeline.legendVolatility")}
           </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-sky-500" aria-hidden />
-            {t("timeline.legendOfficial")}
-          </span>
+          {officialFeedAvailable ? (
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-sky-500" aria-hidden />
+              {t("timeline.legendOfficial")}
+            </span>
+          ) : null}
         </span>
       </div>
+      {!loading && !loadErr && access && !officialFeedAvailable ? (
+        <p className="mb-1.5 text-[10px] leading-snug text-slate-500">{t("timeline.officialFeedUnavailable")}</p>
+      ) : null}
       {loading ? (
         <p className="text-[11px] text-slate-500">{t("timeline.loading")}</p>
       ) : loadErr ? (
@@ -474,7 +485,11 @@ export function EntityEventTimeline({
                 type="button"
                 role="listitem"
                 title={p.point_type === "volatility" ? t("timeline.pointVolatility") : t("timeline.pointOfficial")}
-                className={`absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ${color} ring-2 ring-slate-900 hover:scale-110 focus:outline-none focus:ring-2 focus:ring-indigo-500`}
+                disabled={windowLoading}
+                aria-disabled={windowLoading}
+                className={`absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ${color} ring-2 ring-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  windowLoading ? "cursor-wait opacity-60" : "cursor-pointer hover:scale-110"
+                }`}
                 style={{ left: `${left}%` }}
                 onClick={() => openPoint(p.id)}
               />

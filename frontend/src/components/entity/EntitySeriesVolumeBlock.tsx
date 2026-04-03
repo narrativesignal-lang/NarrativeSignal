@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { TimeSeriesChart } from "@/components/TimeSeriesChart";
 import { useI18n } from "@/lib/i18n";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 
-type Kind = "search" | "coverage";
+type Kind = "target_search" | "keywords_search" | "coverage";
 
 export function EntitySeriesVolumeBlock({
   entityId,
@@ -20,16 +21,50 @@ export function EntitySeriesVolumeBlock({
   const [points, setPoints] = useState<Array<{ t: string; value: number }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [emptyHint, setEmptyHint] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setEmptyHint(null);
     try {
-      const res =
-        kind === "search"
-          ? await api.getEntitySearchVolumeSeries(entityId, period)
-          : await api.getEntityCoverageVolumeSeries(entityId, period);
-      setPoints(res.points.map((p) => ({ t: p.t, value: p.value })));
+      if (kind === "keywords_search") {
+        const res = await api.getEntityKeywordsSearchVolumeSeries(entityId, period);
+        setPoints(res.points.map((p) => ({ t: p.t, value: p.value })));
+        if (!res.points?.length) {
+          const msg = typeof res.message === "string" ? res.message : null;
+          if (msg) setEmptyHint(msg);
+          else if (res.loading_state === "warming" || res.loading_state === "placeholder") {
+            setEmptyHint("Metrics are still loading. Try again shortly.");
+          } else {
+            setEmptyHint("No keywords search volume for this period.");
+          }
+        }
+      } else if (kind === "target_search") {
+        const res = await api.getEntityTargetSearchVolumeSeries(entityId, period);
+        setPoints(res.points.map((p) => ({ t: p.t, value: p.value })));
+        if (!res.points?.length) {
+          const msg = typeof res.message === "string" ? res.message : null;
+          if (msg) setEmptyHint(msg);
+          else if (res.loading_state === "warming" || res.loading_state === "placeholder") {
+            setEmptyHint("Metrics are still loading. Try again shortly.");
+          } else {
+            setEmptyHint("No target (ticker) search volume for this period.");
+          }
+        }
+      } else {
+        const res = await api.getEntityCoverageVolumeSeries(entityId, period);
+        setPoints(res.points.map((p) => ({ t: p.t, value: p.value })));
+        if (!res.points?.length) {
+          const msg = typeof res.message === "string" ? res.message : null;
+          if (msg) setEmptyHint(msg);
+          else if (res.loading_state === "warming" || res.loading_state === "placeholder") {
+            setEmptyHint("Metrics are still loading. Try again shortly.");
+          } else {
+            setEmptyHint("No coverage data for this period.");
+          }
+        }
+      }
     } catch (e: unknown) {
       setError((e as { message?: string })?.message ?? t("entity.chartLoadFailed"));
       setPoints([]);
@@ -43,11 +78,7 @@ export function EntitySeriesVolumeBlock({
   }, [load]);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[160px] items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500">
-        {t("entity.loadingSeries")}
-      </div>
-    );
+    return <BlockStateMessage kind="loading" height={160} />;
   }
   if (error) {
     return (
@@ -55,11 +86,14 @@ export function EntitySeriesVolumeBlock({
     );
   }
   if (!points.length) {
-    return (
-      <div className="flex min-h-[160px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500">
-        {t("entity.noMetricRows")}
-      </div>
-    );
+    const reason =
+      emptyHint ||
+      (kind === "coverage"
+        ? "No coverage data for this period."
+        : kind === "target_search"
+          ? "No target search volume for this period."
+          : "No keywords search volume for this period.");
+    return <BlockStateMessage kind="no_data" height={160} reason={reason} />;
   }
 
   return <TimeSeriesChart points={points} height={220} />;

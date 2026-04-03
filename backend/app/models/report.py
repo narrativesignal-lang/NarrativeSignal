@@ -14,7 +14,9 @@ class Report(Base):
     __tablename__ = "reports"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
 
     kind: Mapped[str] = mapped_column(String(40), nullable=False)  # keyword_daily, info_24h, group_snapshot, ai_report
     title: Mapped[str] = mapped_column(String(200), nullable=False)

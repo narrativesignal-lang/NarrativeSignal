@@ -60,7 +60,7 @@ Canonical names live in `FeatureKey` and `FEATURE_TIER_MAP` in `backend/app/core
 ## API / code flow
 
 - **`get_feature_tier(feature_name)`** — returns `FeatureTier` for a registered key (unknown keys raise `KeyError`).
-- **`can_access_feature(user, feature_name)`** — `True` if admin; else `True` for `FREE` tier keys; else uses **`_non_admin_ai_entitled`** (today always `False` for non-admins on LIGHT/HEAVY).
+- **`can_access_feature(user, feature_name)`** — `True` if admin; else `True` for `FREE` tier keys; else uses **`_non_admin_ai_entitled`**, which grants LIGHT/HEAVY AI to non-admins when **`plan_code`** + **`ai_access_level`** match (see `feature_access.py`: `basic_ai`+`light` → LIGHT_AI only; `full_ai`+`heavy` → LIGHT+HEAVY).
 - **HTTP dependencies** — `require_feature(feature_name)` in `app.api.deps` returns a FastAPI dependency that returns 403 with the same user-facing message as before.
 
 Legacy helper **`can_use_paid_ai`** remains as a **HEAVY_AI-oriented** compatibility alias (`DOCUMENT_LLM_ANALYSIS`). Prefer `can_access_feature` with the specific `FeatureKey` at call sites.

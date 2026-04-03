@@ -11,8 +11,13 @@ from sqlalchemy.orm import Session
 from app.models.data_subscription import EntityDailyMetric
 from app.services.entity_chart_3d import _CHART3D_RANGE_DAYS, normalize_chart_3d_range
 
-_ALLOWED_BASE = {"search_trend", "coverage_volume", "sentiment_score"}
-_ALLOWED_DERIVED = {"momentum", "acceleration"}
+_ALLOWED_BASE = {"target_search_volume", "keywords_search_volume", "coverage_volume", "sentiment_score"}
+_ALLOWED_DERIVED = {
+    "momentum_target",
+    "acceleration_target",
+    "momentum_keywords",
+    "acceleration_keywords",
+}
 
 
 def _day_window(range_key: str) -> date:
@@ -40,14 +45,19 @@ def get_entity_metric_timeseries(
 ) -> list[dict[str, float | str]]:
     """
     Unified metric reader. All charts should consume this service.
-    - base: search_trend / coverage_volume / sentiment_score
-    - derived: momentum (d1 of search_trend), acceleration (d2 of search_trend)
+    - base: target_search_volume / keywords_search_volume / coverage_volume / sentiment_score
+    - derived: momentum_* / acceleration_* (per tool, from respective base)
     """
     m = (metric_name or "").strip().lower()
     if m in _ALLOWED_DERIVED:
-        base = get_entity_metric_timeseries(db, entity_id, "search_trend", range_key=range_key)
+        base_metric = (
+            "target_search_volume"
+            if m in ("momentum_target", "acceleration_target")
+            else "keywords_search_volume"
+        )
+        base = get_entity_metric_timeseries(db, entity_id, base_metric, range_key=range_key)
         d1 = _first_derivative(base)
-        if m == "momentum":
+        if m in ("momentum_target", "momentum_keywords"):
             return d1
         return _first_derivative(d1)
 
@@ -55,14 +65,19 @@ def get_entity_metric_timeseries(
         raise ValueError(f"unsupported metric: {metric_name}")
 
     start_day = _day_window(range_key)
-    rows = db.scalars(
+    stmt = (
         select(EntityDailyMetric)
         .where(
             EntityDailyMetric.entity_id == entity_id,
             EntityDailyMetric.metric_date >= start_day,
         )
         .order_by(EntityDailyMetric.metric_date.asc())
-    ).all()
+    )
+    if m == "target_search_volume":
+        stmt = stmt.where(EntityDailyMetric.target_search_volume_source.in_(["google_trends", "real"]))
+    elif m == "keywords_search_volume":
+        stmt = stmt.where(EntityDailyMetric.keywords_search_volume_source.in_(["google_trends", "real"]))
+    rows = db.scalars(stmt).all()
 
     out: list[dict[str, float | str]] = []
     carry: float | None = None

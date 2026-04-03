@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 
 type MacroEventItem = Awaited<ReturnType<typeof api.macroEvents>>[number];
 
@@ -102,7 +103,9 @@ export function MacroFeed({ category }: { category: string | null }) {
         </div>
       ) : null}
       {loading ? (
-        <div className="mt-3 text-sm text-slate-500">Loading…</div>
+        <div className="mt-3">
+          <BlockStateMessage kind="loading" />
+        </div>
       ) : (
         <div className="mt-3 flex-1 space-y-0 overflow-y-auto pr-2">
           {showPlaceholder

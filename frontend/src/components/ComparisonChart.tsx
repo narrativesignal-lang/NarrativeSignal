@@ -4,6 +4,7 @@ type Point = { t: string; value: number };
 type SeriesLine = { symbol: string; points: Point[] };
 
 const COLORS = ["#818cf8", "#34d399", "#f59e0b", "#f472b6"];
+// NOTE: Empty-state messaging is handled by parent blocks via BlockStateMessage for consistency.
 
 export function ComparisonChart({
   series,
@@ -18,7 +19,7 @@ export function ComparisonChart({
         className="flex items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500"
         style={{ height }}
       >
-        No data
+        —
       </div>
     );
   }

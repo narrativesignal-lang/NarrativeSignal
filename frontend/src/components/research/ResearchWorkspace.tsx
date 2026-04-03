@@ -23,6 +23,7 @@ import {
 } from "@/components/ResizableChartSection";
 import { ResearchAddBlockModal } from "./ResearchAddBlockModal";
 import { ResearchChart, type ChartType } from "./ResearchChart";
+import { ResearchOverlayPanel } from "./ResearchOverlayPanel";
 import { ResearchInstrumentChartZone } from "./ResearchInstrumentChartZone";
 import { ResearchSetupCard } from "./ResearchSetupCard";
 
@@ -128,10 +129,19 @@ export function ResearchWorkspace({
     [updateActiveTab]
   );
 
-  const addChart = useCallback(
-    (type: ChartType, kind: "overlay" | "single" | "analysis") => {
+  const addSingleBlock = useCallback(
+    (type: ChartType, kind: "single" | "analysis") => {
       if (!activeTab || panels.length >= MAX_BLOCKS_PER_TAB) return;
       setPanels([...panels, { type, kind }]);
+      setAddModalOpen(false);
+    },
+    [activeTab, panels, setPanels]
+  );
+
+  const addOverlayBundle = useCallback(
+    (types: ChartType[]) => {
+      if (!activeTab || panels.length >= MAX_BLOCKS_PER_TAB || types.length === 0) return;
+      setPanels([...panels, { type: types[0]!, kind: "overlay", overlayTypes: types }]);
       setAddModalOpen(false);
     },
     [activeTab, panels, setPanels]
@@ -466,8 +476,8 @@ export function ResearchWorkspace({
           <ResearchAddBlockModal
             open={addModalOpen}
             onClose={() => setAddModalOpen(false)}
-            onAdd={addChart}
-            setup={setup}
+            onAddOverlay={addOverlayBundle}
+            onAddSingle={addSingleBlock}
             hasResearchTarget={setupComplete}
           />
 
@@ -498,23 +508,57 @@ export function ResearchWorkspace({
                 <div key={i} className="min-h-[140px]">
                   {p.kind === "overlay" ? (
                     <div className="rounded-lg border border-amber-800/40 bg-slate-900/50 p-2">
-                      <p className="mb-1 text-xs text-amber-200/80">
-                        Overlay chart — only same-timeline compatible series can be added here.
-                      </p>
-                      <ResearchChart
-                        type={p.type}
-                        hasContext={setupComplete}
+                      <p className="mb-1 text-xs text-amber-200/80">{t("workspace.sameTimelineNote")}</p>
+                      <ResearchOverlayPanel
+                        panel={p}
                         entityId={activeTab?.setup?.entity_id ?? null}
-                        onRemove={() => removeChart(i)}
-                        onMoveUp={i > 0 ? () => moveChart(i, "up") : undefined}
-                        onMoveDown={i < panels.length - 1 ? () => moveChart(i, "down") : undefined}
+                        period={
+                          typeof setup.default_time_range === "string" && setup.default_time_range
+                            ? setup.default_time_range
+                            : "1M"
+                        }
                       />
+                      <div className="mt-2 flex justify-end gap-1 border-t border-slate-800/80 pt-2">
+                        {i > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => moveChart(i, "up")}
+                            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                            title="Move up"
+                          >
+                            ↑
+                          </button>
+                        ) : null}
+                        {i < panels.length - 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => moveChart(i, "down")}
+                            className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                            title="Move down"
+                          >
+                            ↓
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => removeChart(i)}
+                          className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300"
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <ResearchChart
                       type={p.type}
                       hasContext={setupComplete}
                       entityId={activeTab?.setup?.entity_id ?? null}
+                      period={
+                        typeof setup.default_time_range === "string" && setup.default_time_range
+                          ? setup.default_time_range
+                          : "1M"
+                      }
                       onRemove={() => removeChart(i)}
                       onMoveUp={i > 0 ? () => moveChart(i, "up") : undefined}
                       onMoveDown={i < panels.length - 1 ? () => moveChart(i, "down") : undefined}

@@ -165,6 +165,76 @@ def get_quote(symbol: str) -> dict[str, Any] | None:
     return out
 
 
+def get_quotes_batch(symbols: list[str]) -> dict[str, dict[str, Any] | None]:
+    """
+    GET /quote?symbol=AAPL,MSFT,...
+    Returns per-symbol dict or None (best-effort).
+    """
+    syms = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+    if not syms:
+        return {}
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+
+    # Twelve supports comma-separated symbols for quote; response may be { symbol: {...} } OR list-like.
+    data = _twelve_request("quote", {"symbol": ",".join(uniq)})
+    out: dict[str, dict[str, Any] | None] = {s: None for s in uniq}
+    if not data:
+        return out
+
+    def _coerce_quote(sym: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        def _f(x: Any) -> float | None:
+            if x is None:
+                return None
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return None
+
+        price = _f(payload.get("close")) or _f(payload.get("price"))
+        if price is None:
+            return None
+        chg = _f(payload.get("change"))
+        pct = _f(payload.get("percent_change"))
+        ts_raw = payload.get("datetime") or payload.get("timestamp") or payload.get("last_quote_time")
+        ts = str(ts_raw).strip() if ts_raw else datetime.now(timezone.utc).isoformat()
+        return {
+            "symbol": sym,
+            "price": price,
+            "change": chg if chg is not None else 0.0,
+            "percent_change": pct if pct is not None else 0.0,
+            "timestamp": ts,
+        }
+
+    if "symbol" in data and data.get("close") is not None:
+        sym = str(data.get("symbol") or "").strip().upper()
+        if sym:
+            out[sym] = _coerce_quote(sym, data)
+        return out
+
+    # Some plans respond: { "AAPL": {...}, "MSFT": {...} }
+    for sym, payload in data.items():
+        if not isinstance(payload, dict):
+            continue
+        s = str(sym).strip().upper()
+        if s in out:
+            out[s] = _coerce_quote(s, payload)
+
+    # Cache best-effort per symbol (keep same TTL as single quote).
+    try:
+        r = _r()
+        for s, q in out.items():
+            if q and isinstance(q, dict) and q.get("price") is not None:
+                r.setex(QUOTE_KEY_PREFIX + s, QUOTE_TTL_SEC, json.dumps(q))
+    except Exception:
+        pass
+    return out
+
+
 def get_time_series(symbol: str, interval: str = "1day", outputsize: int = 100) -> list[dict[str, Any]]:
     """
     GET /time_series?symbol=&interval=&outputsize=
@@ -225,4 +295,34 @@ def get_time_series(symbol: str, interval: str = "1day", outputsize: int = 100) 
             _r().setex(cache_k, TS_TTL_SEC, json.dumps(out))
         except Exception:
             pass
+    return out
+
+
+def get_time_series_batch(
+    symbols: list[str],
+    *,
+    interval: str = "1day",
+    outputsize: int = 100,
+) -> dict[str, list[dict[str, Any]]]:
+    """
+    Batch-shaped adapter for Twelve time_series.
+
+    Twelve REST time_series is per-symbol in our current client, so this function loops
+    within the chunk. Business layers should still treat this as a batch interface.
+    """
+    syms = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    out: dict[str, list[dict[str, Any]]] = {s: [] for s in uniq}
+    if not uniq:
+        return out
+    for s in uniq:
+        try:
+            out[s] = get_time_series(s, interval=interval, outputsize=outputsize) or []
+        except Exception:
+            out[s] = []
     return out

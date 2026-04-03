@@ -6,9 +6,8 @@ Product tiers (for documentation and future billing):
 - LIGHT_AI: lighter LLM usage (e.g. suggestions, short summaries).
 - HEAVY_AI: document analysis, AI schedules, and other high-cost LLM workflows.
 
-**Current effective rule:** admins bypass all tier checks; non-admins get FREE only
-(LIGHT_AI and HEAVY_AI denied). This preserves legacy behavior until plan/credits
-logic is wired into ``_non_admin_ai_entitled``.
+**Effective rule:** admins bypass all tier checks. Non-admins: FREE always;
+LIGHT_AI / HEAVY_AI via ``plan_code`` + ``ai_access_level`` (see ``_non_admin_ai_entitled``).
 
 See ``docs/feature_access_and_tiers.md`` for the feature map and billing hooks.
 """
@@ -17,6 +16,12 @@ from __future__ import annotations
 
 from enum import Enum
 
+from app.core.plan_entitlements import (
+    AiAccessLevel,
+    PlanCode,
+    normalize_ai_access_level,
+    normalize_plan_code,
+)
 from app.core.user_admin import user_is_admin
 from app.models.user import User
 
@@ -48,6 +53,10 @@ class FeatureKey:
     # --- LIGHT_AI ---
     KEYWORD_SUGGESTIONS = "keyword_suggestions"
     TIMELINE_AI_SUMMARY = "timeline_ai_summary"
+    ENTITY_SENTIMENT_AI = "entity_sentiment_ai"
+    PRICE_MOVE_EXPLANATION = "price_move_explanation"
+    RANGE_SUMMARY = "range_summary"
+    COMPARE_SUMMARY = "compare_summary"
 
     # --- HEAVY_AI ---
     DOCUMENT_LLM_ANALYSIS = "document_llm_analysis"
@@ -74,6 +83,10 @@ FEATURE_TIER_MAP: dict[str, FeatureTier] = {
     # LIGHT_AI
     FeatureKey.KEYWORD_SUGGESTIONS: FeatureTier.LIGHT_AI,
     FeatureKey.TIMELINE_AI_SUMMARY: FeatureTier.LIGHT_AI,
+    FeatureKey.ENTITY_SENTIMENT_AI: FeatureTier.LIGHT_AI,
+    FeatureKey.PRICE_MOVE_EXPLANATION: FeatureTier.LIGHT_AI,
+    FeatureKey.RANGE_SUMMARY: FeatureTier.LIGHT_AI,
+    FeatureKey.COMPARE_SUMMARY: FeatureTier.LIGHT_AI,
     # HEAVY_AI
     FeatureKey.DOCUMENT_LLM_ANALYSIS: FeatureTier.HEAVY_AI,
     FeatureKey.SCHEDULE_AI_ALERT: FeatureTier.HEAVY_AI,
@@ -103,14 +116,28 @@ def get_feature_tier(feature_name: str) -> FeatureTier:
     return FEATURE_TIER_MAP[feature_name]
 
 
-def _non_admin_ai_entitled(user: User, tier: FeatureTier) -> bool:  # noqa: ARG001
+def _non_admin_ai_entitled(user: User, tier: FeatureTier) -> bool:
     """
-    Whether a non-admin may use LIGHT_AI / HEAVY_AI for this request.
+    Non-admin: LIGHT_AI / HEAVY_AI from ``plan_code`` + ``ai_access_level``.
 
-    Today: always False (non-admins have no AI). Future: evaluate ``user.plan_code``
-    / ``user.ai_access_level`` using ``app.core.plan_entitlements`` (``PlanCode``,
-    ``AiAccessLevel``), ``credits_balance``, and ``tier`` (and subscriptions) here.
+    - ``basic_ai`` + ``light`` → LIGHT_AI features only.
+    - ``full_ai`` + ``light`` → LIGHT_AI features.
+    - ``full_ai`` + ``heavy`` → LIGHT_AI and HEAVY_AI features.
+    Other combinations → no AI (same as free).
     """
+    plan = normalize_plan_code(getattr(user, "plan_code", None)) or PlanCode.FREE
+    level = normalize_ai_access_level(getattr(user, "ai_access_level", None)) or AiAccessLevel.NONE
+
+    if tier == FeatureTier.LIGHT_AI:
+        if plan == PlanCode.BASIC_AI:
+            return level == AiAccessLevel.LIGHT
+        if plan == PlanCode.FULL_AI:
+            return level in (AiAccessLevel.LIGHT, AiAccessLevel.HEAVY)
+        return False
+
+    if tier == FeatureTier.HEAVY_AI:
+        return plan == PlanCode.FULL_AI and level == AiAccessLevel.HEAVY
+
     return False
 
 

@@ -20,9 +20,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
     credits_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    #: Future billing: use ``PlanCode`` values (``app.core.plan_entitlements``). Not yet used for AI gating.
+    #: ``PlanCode`` values — used with ``ai_access_level`` in ``app.core.feature_access._non_admin_ai_entitled``.
     plan_code: Mapped[str] = mapped_column(String(64), nullable=False, default=PlanCode.FREE.value)
-    #: Future billing: use ``AiAccessLevel`` values. Not yet used; see ``feature_access``.
+    #: ``AiAccessLevel`` — light / heavy AI entitlements (see ``feature_access``).
     ai_access_level: Mapped[str] = mapped_column(String(32), nullable=False, default=AiAccessLevel.NONE.value)
     #: Subscription / paid tier flag — timeline unlock requires paid_access and credits_balance > 0 (admins bypass).
     paid_access: Mapped[bool] = mapped_column(nullable=False, default=False)

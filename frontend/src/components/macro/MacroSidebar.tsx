@@ -48,7 +48,7 @@ export function MacroSidebar({
           type="button"
           disabled
           className="flex w-full cursor-default items-center rounded-r border-l-2 border-transparent py-2 pl-3 pr-2 text-left text-sm text-slate-500"
-          title="Coming soon"
+          title="Disabled by system"
         >
           {t("macro.customPlaceholder")}
         </button>

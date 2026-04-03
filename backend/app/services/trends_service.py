@@ -26,21 +26,18 @@ def _sleep_rate_limit() -> None:
     time.sleep(settings.trends_request_sleep_seconds + random.uniform(0, 0.5))
 
 
-def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, Any]]:
+def get_daily_interest_single_keyword(keyword: str, timeframe: str) -> list[dict[str, Any]]:
     """
-    Fetch daily Google Trends interest (0–100) for up to 5 terms in one request.
-    Multiple terms are combined by **mean** per day.
-
-    Always returns a list (possibly empty). Never raises. Never returns None.
+    One Google Trends request per keyword (no multi-keyword batch used as combined series).
+    Returns [{"date": "YYYY-MM-DD", "value": float 0–100}, ...]. Never raises.
     """
-    cleaned = [t.strip() for t in (terms or []) if t and str(t).strip()]
+    cleaned = (keyword or "").strip()
     if not cleaned:
-        logger.warning("pytrends returned empty or failed for terms: %s", terms)
         return []
 
     try:
         tf = normalize_trends_timeframe(timeframe)
-        kw_list = cleaned[:5]
+        kw_list = [cleaned]
 
         from pytrends.request import TrendReq
 
@@ -57,7 +54,7 @@ def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, A
         _sleep_rate_limit()
 
         if df is None:
-            logger.warning("pytrends returned empty or failed for terms: %s", kw_list)
+            logger.info("pytrends empty df keyword=%s", cleaned[:80])
             return []
 
         try:
@@ -65,7 +62,7 @@ def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, A
         except Exception:
             is_empty = True
         if is_empty:
-            logger.warning("pytrends returned empty or failed for terms: %s", kw_list)
+            logger.info("pytrends empty df keyword=%s", cleaned[:80])
             return []
 
         try:
@@ -79,46 +76,58 @@ def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, A
             except Exception:
                 pass
 
-        present_kw = [k for k in kw_list if k in cols]
-        if not present_kw:
-            logger.warning("pytrends returned empty or failed for terms: %s (missing keyword columns)", kw_list)
+        if cleaned not in cols:
+            logger.info("pytrends missing column keyword=%s cols=%s", cleaned[:80], cols[:10])
             return []
 
         out: list[dict[str, Any]] = []
         try:
             index_iter = list(df.index)
         except Exception:
-            logger.warning("pytrends returned empty or failed for terms: %s", kw_list)
             return []
 
         for idx in index_iter:
-            vals: list[float] = []
-            for k in present_kw:
-                try:
-                    if k not in df.columns:
-                        continue
-                    cell = df.loc[idx, k]
-                    vals.append(float(cell))
-                except Exception:
-                    continue
-            if not vals:
+            try:
+                cell = df.loc[idx, cleaned]
+                val = max(0.0, min(100.0, round(float(cell), 4)))
+            except Exception:
                 continue
-            combined = sum(vals) / len(vals)
-            combined = max(0.0, min(100.0, round(combined, 4)))
             if hasattr(idx, "strftime"):
                 ds = idx.strftime("%Y-%m-%d")
             else:
                 ds = str(idx)[:10]
-            out.append({"date": ds, "search_trend": combined})
+            out.append({"date": ds, "value": val})
 
-        if not out:
-            logger.warning("pytrends returned empty or failed for terms: %s", kw_list)
-            return []
         return out
     except Exception as e:
-        logger.warning("pytrends returned empty or failed for terms: %s (%s)", cleaned, e)
+        logger.warning("pytrends failed keyword=%s err=%s", cleaned[:80], str(e)[:200])
         try:
             _sleep_rate_limit()
         except Exception:
             pass
         return []
+
+
+def get_daily_search_trend(terms: list[str], timeframe: str) -> list[dict[str, Any]]:
+    """
+    Deprecated for entity metrics: use get_daily_interest_single_keyword per term.
+    Kept for compatibility: fetches each term independently and averages per day (not additive).
+    """
+    cleaned = [t.strip() for t in (terms or []) if t and str(t).strip()]
+    if not cleaned:
+        return []
+    by_date: dict[str, list[float]] = {}
+    for term in cleaned[:8]:
+        for p in get_daily_interest_single_keyword(term, timeframe):
+            ds = str(p.get("date") or "")
+            if not ds:
+                continue
+            by_date.setdefault(ds, []).append(float(p["value"]))
+    out: list[dict[str, Any]] = []
+    for ds in sorted(by_date.keys()):
+        vals = by_date[ds]
+        if not vals:
+            continue
+        combined = sum(vals) / len(vals)
+        out.append({"date": ds, "search_trend": max(0.0, min(100.0, round(combined, 4)))})
+    return out

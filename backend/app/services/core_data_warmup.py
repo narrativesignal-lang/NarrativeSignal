@@ -14,6 +14,7 @@ def _run_warmup_sync() -> bool:
     t0 = time.perf_counter()
     try:
         from app.db.session import SessionLocal
+        from app.services.runtime_flags import RuntimeFlagKey, provider_enabled
         from app.services.market_snapshots import (
             collect_symbols_for_scheduled_market_refresh,
             upsert_ohlcv_from_fetch,
@@ -24,6 +25,9 @@ def _run_warmup_sync() -> bool:
         lite_periods: tuple[str, ...] = ("1D", "1M")
 
         with SessionLocal() as db:
+            if not provider_enabled(db, RuntimeFlagKey.ENABLE_EXTERNAL_PROVIDERS):
+                logger.info("core_data_warmup disabled_by_runtime_flag=1 (external providers off)")
+                return True
             syms = sorted(collect_symbols_for_scheduled_market_refresh(db))
             for sym in syms:
                 try:
@@ -53,7 +57,8 @@ def _run_warmup_sync() -> bool:
 
         with SessionLocal() as db:
             try:
-                rebuild_snapshots_all_categories(db)
+                if provider_enabled(db, RuntimeFlagKey.ENABLE_FETCH_MACRO_NEWS):
+                    rebuild_snapshots_all_categories(db)
                 db.commit()
             except Exception:
                 db.rollback()

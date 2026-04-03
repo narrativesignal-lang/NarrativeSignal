@@ -5,6 +5,7 @@ import { CandleChart } from "@/components/CandleChart";
 import { api } from "@/lib/api";
 import type { CandleBar } from "@/lib/ohlcvBars";
 import { useI18n } from "@/lib/i18n";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 
 export function EntityStackedCandleCharts({
   entityId,
@@ -24,10 +25,8 @@ export function EntityStackedCandleCharts({
     setLoading(true);
     setError(null);
     try {
-      const [entity, related] = await Promise.all([
-        api.getEntity(entityId),
-        api.getEntityRelatedInstruments(entityId).catch(() => []),
-      ]);
+      const entity = await api.getEntity(entityId);
+      const related = await api.getEntityRelatedInstruments(entityId).catch(() => []);
       const symbols: string[] = [];
       if (entity.instrument?.symbol) symbols.push(entity.instrument.symbol);
       related.forEach((r) => {
@@ -62,11 +61,7 @@ export function EntityStackedCandleCharts({
   }, [load]);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[140px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500 text-balance break-words">
-        {t("common.loading")}
-      </div>
-    );
+    return <BlockStateMessage kind="loading" height={140} />;
   }
   if (error) {
     return (
@@ -76,11 +71,7 @@ export function EntityStackedCandleCharts({
     );
   }
   if (!rows.length || rows.every((r) => !r.bars.length)) {
-    return (
-      <div className="flex min-h-[100px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500 text-balance break-words">
-        {t("entity.stackedCandlesNoData")}
-      </div>
-    );
+    return <BlockStateMessage kind="no_data" height={100} reason="no cached price history / worker not run" />;
   }
 
   return (

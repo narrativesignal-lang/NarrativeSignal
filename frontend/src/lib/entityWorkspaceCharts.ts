@@ -18,11 +18,14 @@ export const WORKSPACE_CHART_TYPES = [
   "overlay_sentiment",
   "split_technical",
   "split_sentiment",
-  "series_search_volume",
+  "series_target_search_volume",
+  "series_keywords_search_volume",
   "series_coverage_volume",
   "series_triple_signal",
-  "metric_momentum",
-  "metric_acceleration",
+  "metric_momentum_target",
+  "metric_acceleration_target",
+  "metric_momentum_keywords",
+  "metric_acceleration_keywords",
   "analysis_3d",
   "analysis_institution_bias",
   "analysis_rating_distribution",
@@ -36,7 +39,106 @@ export type WorkspaceChartBlock = {
   id: string;
   type: WorkspaceChartType;
   title?: string;
+  /** For `overlay_technical`: which math series share the entity period timeline (normalized overlay). */
+  overlaySeries?: readonly string[];
 };
+
+/** Ordered keys for deterministic UI and merge behavior. */
+export const ENTITY_OVERLAY_SERIES_ORDER = [
+  "price_close",
+  "target_search_volume",
+  "keywords_search_volume",
+  "coverage_volume",
+  "triple_signal",
+] as const;
+
+export type EntityOverlaySeriesKey = (typeof ENTITY_OVERLAY_SERIES_ORDER)[number];
+
+export const ENTITY_OVERLAY_TIMELINE_HINT =
+  "These series use the same entity period (daily-aligned where available). Values are min–max normalized per series for comparison (math only, not price levels).";
+
+export const ENTITY_OVERLAY_SERIES_META: Record<
+  EntityOverlaySeriesKey,
+  { label: string; description: string }
+> = {
+  price_close: {
+    label: "Price (close)",
+    description: "Instrument close from cached OHLCV, normalized for shape — not dollar scale.",
+  },
+  target_search_volume: {
+    label: "Target search volume",
+    description: "Ticker-intent search index for the entity period.",
+  },
+  keywords_search_volume: {
+    label: "Keywords search volume",
+    description: "Narrative keyword search aggregate for the entity period.",
+  },
+  coverage_volume: {
+    label: "Coverage volume",
+    description: "News coverage volume for the entity period.",
+  },
+  triple_signal: {
+    label: "Triple signal (3 lines)",
+    description: "Trading activity, news volume, and keywords search (each normalized 0–100 in source API).",
+  },
+};
+
+export function isEntityOverlaySeriesKey(s: string): s is EntityOverlaySeriesKey {
+  return (ENTITY_OVERLAY_SERIES_ORDER as readonly string[]).includes(s);
+}
+
+function sortOverlayKeys(keys: Iterable<string>): string[] {
+  const order = new Map(ENTITY_OVERLAY_SERIES_ORDER.map((k, i) => [k, i]));
+  return [...new Set(keys)].filter(isEntityOverlaySeriesKey).sort((a, b) => (order.get(a)! - order.get(b)!));
+}
+
+/** Data tab (single charts): one block per add — parallel time-series / stacked layouts. */
+export const ENTITY_SPLIT_TAB_TYPES: readonly WorkspaceChartType[] = [
+  "split_technical",
+  "split_sentiment",
+  "series_target_search_volume",
+  "series_keywords_search_volume",
+  "series_coverage_volume",
+  "series_triple_signal",
+] as const;
+
+/** Analysis tab: derived / spatial charts (DB metrics; no LLM in request path for 3D). */
+export const ENTITY_CLASSIC_ANALYSIS_TAB_TYPES: readonly WorkspaceChartType[] = [
+  "quadrant",
+  "analysis_3d",
+  "metric_momentum_target",
+  "metric_acceleration_target",
+  "metric_momentum_keywords",
+  "metric_acceleration_keywords",
+  "analysis_institution_bias",
+  "analysis_rating_distribution",
+] as const;
+
+/**
+ * Target Data → AI Analysis tab only: blocks that call LLM / AI pipelines on the backend
+ * (same tier as `FeatureKey.ENTITY_SENTIMENT_AI` — LIGHT_AI).
+ */
+export const ENTITY_AI_ANALYSIS_TAB_TYPES: readonly WorkspaceChartType[] = ["overlay_sentiment"] as const;
+
+/** UI + gating: which workspace block types consume AI (matches backend feature tiers). */
+export type WorkspaceAiCost = "none" | "light" | "heavy";
+
+export const WORKSPACE_BLOCK_AI_COST: Partial<Record<WorkspaceChartType, WorkspaceAiCost>> = {
+  overlay_sentiment: "light",
+};
+
+/** All analysis-category picks (classic + AI). */
+export const ENTITY_ANALYSIS_TAB_TYPES: readonly WorkspaceChartType[] = [
+  ...ENTITY_CLASSIC_ANALYSIS_TAB_TYPES,
+  ...ENTITY_AI_ANALYSIS_TAB_TYPES,
+] as const;
+
+export type ChartAspectMode = "rectangular" | "square";
+
+export function workspaceBlockAspectMode(type: WorkspaceChartType | string): ChartAspectMode {
+  if (type === "quadrant" || type === "3d" || type === "analysis_3d") return "square";
+  return "rectangular";
+}
 
 /** Component category for Entity add modal. Data = raw time-series; Analysis = derived/composite. */
 export const COMPONENT_CATEGORY: Record<WorkspaceChartType, ComponentCategory> = {
@@ -46,48 +148,53 @@ export const COMPONENT_CATEGORY: Record<WorkspaceChartType, ComponentCategory> =
   overlay_sentiment: "data",
   split_technical: "data",
   split_sentiment: "data",
-  series_search_volume: "data",
+  series_target_search_volume: "data",
+  series_keywords_search_volume: "data",
   series_coverage_volume: "data",
   series_triple_signal: "data",
   quadrant: "analysis",
   "3d": "analysis",
   analysis_3d: "analysis",
-  metric_momentum: "analysis",
-  metric_acceleration: "analysis",
+  metric_momentum_target: "analysis",
+  metric_acceleration_target: "analysis",
+  metric_momentum_keywords: "analysis",
+  metric_acceleration_keywords: "analysis",
   analysis_institution_bias: "analysis",
   analysis_rating_distribution: "analysis",
 };
 
 /**
  * Workspace types wired for Entity page: real chart renderers or intentional “coming soon” panels.
- * Derived from backend /api/entities/* routes + frontend Entity* components. Excludes overlay_* (layout only).
+ * Derived from backend /api/entities/* routes + frontend Entity* components.
  */
 export const ENTITY_WORKSPACE_IMPLEMENTED_TYPES: readonly WorkspaceChartType[] = [
-  "split_technical",
-  "split_sentiment",
-  "series_search_volume",
+  // Data (Entity workspace surface — these MUST stay aligned with Add Component modal tabs)
+  "overlay_technical",
+  "overlay_sentiment",
+  "series_target_search_volume",
+  "series_keywords_search_volume",
   "series_coverage_volume",
   "series_triple_signal",
+  // Analysis
   "quadrant",
   "analysis_3d",
-  "metric_momentum",
-  "metric_acceleration",
+  "metric_momentum_target",
+  "metric_acceleration_target",
+  "metric_momentum_keywords",
+  "metric_acceleration_keywords",
   "analysis_institution_bias",
   "analysis_rating_distribution",
 ] as const;
 
-/** Premium / admin-only preview in Entity workspace until backends ship. */
-export const ENTITY_PREMIUM_WORKSPACE_TYPES: readonly WorkspaceChartType[] = [
-  "analysis_institution_bias",
-  "analysis_rating_distribution",
-] as const;
+/** Premium / admin-only types for Entity workspace add modal (empty = all available). */
+export const ENTITY_PREMIUM_WORKSPACE_TYPES: readonly WorkspaceChartType[] = [] as const;
 
-/** Sentiment Data section in Add Component modal. */
+/** @deprecated Modal uses ENTITY_SPLIT_TAB_TYPES / ENTITY_ANALYSIS_TAB_TYPES + overlay series keys. */
 export const ENTITY_ADD_MODAL_DATA_TYPES: WorkspaceChartType[] = ENTITY_WORKSPACE_IMPLEMENTED_TYPES.filter(
   (t) => COMPONENT_CATEGORY[t] === "data"
 );
 
-/** Sentiment Analysis section in Add Component modal. */
+/** @deprecated Modal uses ENTITY_ANALYSIS_TAB_TYPES. */
 export const ENTITY_ADD_MODAL_ANALYSIS_TYPES: WorkspaceChartType[] = ENTITY_WORKSPACE_IMPLEMENTED_TYPES.filter(
   (t) => COMPONENT_CATEGORY[t] === "analysis"
 );
@@ -109,18 +216,21 @@ export const ANALYSIS_TYPES: WorkspaceChartType[] = [
 export const WORKSPACE_CHART_LABELS: Record<string, string> = {
   technical: "Technical",
   sentiment: "Sentiment",
-  quadrant: "Quadrant",
+  quadrant: "Narrative quadrant",
   "3d": "3D",
   overlay_technical: "Price & indicators",
   overlay_sentiment: "Sentiment series",
   split_technical: "Technical (stacked)",
   split_sentiment: "Sentiment (stacked)",
-  series_search_volume: "Search trend",
+  series_target_search_volume: "Target search volume",
+  series_keywords_search_volume: "Keywords search volume",
   series_coverage_volume: "Coverage volume",
   series_triple_signal: "Triple signal",
-  metric_momentum: "Search momentum (Δ trend)",
-  metric_acceleration: "Search acceleration (Δ² trend)",
-  analysis_3d: "3D Narrative Space",
+  metric_momentum_target: "Target momentum",
+  metric_acceleration_target: "Target acceleration",
+  metric_momentum_keywords: "Keywords momentum",
+  metric_acceleration_keywords: "Keywords acceleration",
+  analysis_3d: "3D narrative space",
   analysis_institution_bias: "Institution bias",
   analysis_rating_distribution: "Rating distribution",
 };
@@ -128,20 +238,23 @@ export const WORKSPACE_CHART_LABELS: Record<string, string> = {
 export const WORKSPACE_CHART_DESCRIPTIONS: Record<string, string> = {
   technical: "Price, volume, and technical indicators.",
   sentiment: "Narrative and sentiment time series.",
-  quadrant: "Search vs coverage momentum quadrant.",
+  quadrant: "Narrative keywords search vs coverage quadrant.",
   "3d": "Search trend vs coverage over time (3D path).",
   overlay_technical: "Multiple compatible series on the same plot.",
   overlay_sentiment: "Multiple sentiment series overlaid.",
   split_technical: "Stacked vertically with shared time axis.",
   split_sentiment: "Stacked sentiment charts, shared timeline.",
-  series_search_volume: "Daily search-trend time series from entity metrics (DB snapshots).",
+  series_target_search_volume: "Google Trends index for the primary instrument symbol (ticker intent), one keyword.",
+  series_keywords_search_volume: "Sum of independent narrative keyword Trends series (not mixed with ticker).",
   series_coverage_volume: "Daily coverage-volume time series from entity metrics.",
-  series_triple_signal: "Three normalized lines (trading activity, news volume, search trend index).",
-  metric_momentum: "First difference of search trend (day-over-day change).",
-  metric_acceleration: "Second difference of search trend (momentum of momentum).",
-  analysis_3d: "3D narrative space — search vs coverage.",
-  analysis_institution_bias: "Bullish vs bearish institution stance.",
-  analysis_rating_distribution: "Buy / hold / sell distribution.",
+  series_triple_signal: "Three normalized lines (trading, news, narrative keywords search index).",
+  metric_momentum_target: "Day-over-day change in target (ticker) search volume.",
+  metric_acceleration_target: "Second difference of target search volume.",
+  metric_momentum_keywords: "Day-over-day change in narrative keywords search aggregate.",
+  metric_acceleration_keywords: "Second difference of keywords search aggregate.",
+  analysis_3d: "3D narrative space — keywords search vs coverage.",
+  analysis_institution_bias: "Institutional stance category shares (bullish / neutral / bearish).",
+  analysis_rating_distribution: "Analyst rating category percentages (distribution).",
 };
 
 export const WORKSPACE_CHART_DEFAULT_TITLES: Record<string, string> = {
@@ -153,11 +266,14 @@ export const WORKSPACE_CHART_DEFAULT_TITLES: Record<string, string> = {
   overlay_sentiment: "Overlay — Sentiment",
   split_technical: "Split — Technical",
   split_sentiment: "Split — Sentiment",
-  series_search_volume: "Search trend",
+  series_target_search_volume: "Target search volume",
+  series_keywords_search_volume: "Keywords search volume",
   series_coverage_volume: "Coverage volume",
   series_triple_signal: "Triple signal",
-  metric_momentum: "Search momentum",
-  metric_acceleration: "Search acceleration",
+  metric_momentum_target: "Target momentum",
+  metric_acceleration_target: "Target acceleration",
+  metric_momentum_keywords: "Keywords momentum",
+  metric_acceleration_keywords: "Keywords acceleration",
   analysis_3d: "3D Narrative Space",
   analysis_institution_bias: "Institution Bias",
   analysis_rating_distribution: "Rating Distribution",
@@ -176,6 +292,9 @@ function isWorkspaceType(s: string): s is WorkspaceChartType {
 /** Legacy types map to new for display/lookup. */
 function normalizeType(type: string): string {
   if (type === "3d") return "analysis_3d";
+  if (type === "series_search_volume") return "series_keywords_search_volume";
+  if (type === "metric_momentum") return "metric_momentum_keywords";
+  if (type === "metric_acceleration") return "metric_acceleration_keywords";
   return type;
 }
 
@@ -211,6 +330,49 @@ function newBlockId(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `blk-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+const OVERLAY_TECH_BLOCK: WorkspaceChartType = "overlay_technical";
+
+/**
+ * Merge overlay series into the single `overlay_technical` block (deduped). Returns null if nothing to do or at block cap.
+ */
+export function mergeOverlaySeriesIntoWorkspace(
+  blocks: WorkspaceChartBlock[],
+  keysToAdd: string[]
+): WorkspaceChartBlock[] | null {
+  const sorted = sortOverlayKeys(keysToAdd);
+  if (sorted.length === 0) return null;
+  const idx = blocks.findIndex((b) => b.type === OVERLAY_TECH_BLOCK);
+  if (idx >= 0) {
+    const b = blocks[idx];
+    const prev = new Set<string>(
+      b.overlaySeries?.length ? [...b.overlaySeries] : ["price_close"]
+    );
+    for (const k of sorted) prev.add(k);
+    const next = [...blocks];
+    next[idx] = { ...b, overlaySeries: sortOverlayKeys(prev) };
+    return next;
+  }
+  if (blocks.length >= MAX_WORKSPACE_CHARTS) return null;
+  const id = newBlockId();
+  return [
+    ...blocks,
+    {
+      id,
+      type: OVERLAY_TECH_BLOCK,
+      title: WORKSPACE_CHART_DEFAULT_TITLES[OVERLAY_TECH_BLOCK],
+      overlaySeries: sorted,
+    },
+  ];
+}
+
+/** Series already present on the overlay_technical block (for disabling checkboxes). */
+export function getExistingOverlaySeriesKeys(blocks: WorkspaceChartBlock[]): Set<string> {
+  const b = blocks.find((x) => x.type === OVERLAY_TECH_BLOCK);
+  if (!b) return new Set();
+  if (b.overlaySeries?.length) return new Set(b.overlaySeries);
+  return new Set(["price_close"]);
+}
+
 /** Parse and migrate chart_layout from API into workspace blocks + heights. */
 export function parseWorkspaceChartLayout(raw: unknown): {
   blocks: WorkspaceChartBlock[];
@@ -239,10 +401,30 @@ export function parseWorkspaceChartLayout(raw: unknown): {
       const b = item as Record<string, unknown>;
       const rawType = typeof b.type === "string" ? b.type : null;
       if (!rawType) continue;
-      const type: WorkspaceChartType = isWorkspaceType(rawType) ? rawType : ("split_technical" as WorkspaceChartType);
+      const migrated =
+        rawType === "series_search_volume"
+          ? "series_keywords_search_volume"
+          : rawType === "metric_momentum"
+            ? "metric_momentum_keywords"
+            : rawType === "metric_acceleration"
+              ? "metric_acceleration_keywords"
+              : rawType;
+      const type: WorkspaceChartType = isWorkspaceType(migrated)
+        ? migrated
+        : ("split_technical" as WorkspaceChartType);
       const id = typeof b.id === "string" && b.id.trim() ? b.id : newBlockId();
       const title = typeof b.title === "string" && b.title.trim() ? b.title.trim() : undefined;
-      blocks.push({ id, type, title });
+      const overlayRaw = b.overlaySeries;
+      const overlaySeries =
+        Array.isArray(overlayRaw) && overlayRaw.length > 0
+          ? sortOverlayKeys(overlayRaw.filter((x): x is string => typeof x === "string"))
+          : undefined;
+      blocks.push({
+        id,
+        type,
+        title,
+        ...(overlaySeries?.length ? { overlaySeries } : {}),
+      });
     }
     const heights = parseHeights(o.blockHeights, blocks.map((x) => x.id));
     return { blocks, heights, narrativeFlowPeriod };
@@ -306,6 +488,7 @@ export function buildChartLayoutPayload(
       id: b.id,
       type: b.type,
       ...(b.title ? { title: b.title } : {}),
+      ...(b.overlaySeries?.length ? { overlaySeries: [...b.overlaySeries] } : {}),
     })),
     blockHeights: heights,
     ...(narrativeFlowPeriod ? { narrativeFlowPeriod } : {}),

@@ -1,9 +1,14 @@
 """
-Entity price-chart event timeline: volatility day selection, demo official releases,
-and placeholder news windows. Intended to be swapped for provider-backed pipelines later.
+Entity price-chart event timeline: OHLCV volatility days + reserved official markers.
 
-REAL: volatility ranking from OHLCV bars, unified point model, window time math.
-PLACEHOLDER: official release seeding heuristic, news item text, AI summary responses.
+- Yellow (volatility): high range-move days; news is fetched on demand around the move with
+  symbol/name/term relevance filtering (RSS). No official-signal mixing.
+
+- Blue (official): only for future structured / high-confidence feeds (SEC calendar, etc.).
+  RSS keyword classification is NOT used to place blue markers (prefer none over false positives).
+
+PLACEHOLDER:
+- AI summary text only (``ai_summary_placeholder``).
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from app.schemas.entity_timeline import (
     TimelinePointsResponse,
     TimelineWindowResponse,
 )
+from app.services.entity_news_service import fetch_entity_news_by_query
 from app.services.market_snapshots import resolve_ohlcv_bars
 
 
@@ -106,46 +112,241 @@ def compute_volatility_top_days(bars: list[dict[str, Any]]) -> list[dict[str, An
     return sorted(ranked, key=lambda x: int(x["day_start"]))
 
 
-# --- Official release DEMO seed (replace with calendars per asset_class) ---
-def _symbol_digest(symbol: str) -> int:
-    return int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16)
+# Volatility news window: ±12h around noon UTC of the marker day (24h total). Override via env later if needed.
+VOLATILITY_NEWS_HALF_HOURS = 12
+
+_NAME_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "inc",
+        "incorporated",
+        "corp",
+        "corporation",
+        "company",
+        "co",
+        "ltd",
+        "limited",
+        "plc",
+        "llc",
+        "lp",
+        "group",
+        "holdings",
+        "holding",
+        "international",
+        "technologies",
+        "technology",
+        "systems",
+        "services",
+        "global",
+        "ordinary",
+        "shares",
+        "class",
+    }
+)
+
+# Headlines must match these (regex) to appear in an *official* (blue) event panel. Not used to place markers.
+_EQ_OFFICIAL_HEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b10[\s.-]?(k|q)\b", re.I),
+    re.compile(r"\b10k\b", re.I),
+    re.compile(r"\b10q\b", re.I),
+    re.compile(r"\b8[\s.-]?k\b", re.I),
+    re.compile(r"\bearnings\b", re.I),
+    re.compile(r"\beps\b", re.I),
+    re.compile(r"\bguidance\b", re.I),
+    re.compile(r"\boutlook\b", re.I),
+    re.compile(r"\bmerger\b|\bacquisition\b|\bacquires?\b|\btakeover\b", re.I),
+    re.compile(r"\bpartnership\b|\bstrategic\s+partnership\b", re.I),
+)
+
+_MACRO_OFFICIAL_HEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bfederal\s+reserve\b|\bthe\s+fed\b|\bfomc\b", re.I),
+    re.compile(r"\becb\b|\beuropean\s+central\s+bank\b", re.I),
+    re.compile(r"\bboj\b|\bbank\s+of\s+japan\b", re.I),
+    re.compile(r"\brate\s+(cut|hike|decision)\b|\binterest\s+rates?\b", re.I),
+    re.compile(r"\bcpi\b", re.I),
+    re.compile(r"\bnfp\b|\bnon[-\s]?farm\b", re.I),
+    re.compile(r"\bgdp\b", re.I),
+    re.compile(r"\bpmi\b", re.I),
+)
 
 
-def seed_official_demo_points(symbol: str, asset_class: str, bars: list[dict[str, Any]]) -> list[int]:
+def _significant_name_tokens(*names: str | None) -> set[str]:
+    out: set[str] = set()
+    for raw in names:
+        if not raw:
+            continue
+        for w in re.split(r"[^\w]+", raw.lower()):
+            if len(w) >= 4 and w not in _NAME_STOPWORDS:
+                out.add(w)
+    return out
+
+
+def _volatility_relevance_ok(title: str, snippet: str, sym: str, entity: PortfolioEntity, entity_terms: list[str]) -> bool:
+    """Require symbol, company-name token, or strong keyword overlap — reduce generic RSS noise."""
+    h = f"{title} {snippet}".lower()
+    if not h.strip():
+        return False
+
+    sym_u = _safe_symbol(sym).lower()
+    if sym_u:
+        if sym_u in h:
+            return True
+        if "." in sym_u and sym_u.split(".")[0] in h:
+            return True
+        if re.search(rf"(?:^|[^\w]){re.escape(sym_u)}(?:[^\w]|$)", h):
+            return True
+
+    inst = entity.instrument
+    name_tokens = _significant_name_tokens(
+        inst.display_name if inst else None,
+        entity.name,
+    )
+    if any(t in h for t in name_tokens):
+        return True
+
+    for term in entity_terms:
+        t = term.strip().lower()
+        if len(t) < 3:
+            continue
+        if t not in h:
+            continue
+        if len(t) >= 5:
+            return True
+        if sym_u and sym_u in h:
+            return True
+        if any(nt in h for nt in name_tokens):
+            return True
+    return False
+
+
+def _official_headline_matches(asset_class: str, title: str, snippet: str) -> bool:
+    text = f"{title} {snippet}"
+    ac = (asset_class or "").lower().strip()
+    if ac in {"macro", "fx", "rates", "bond", "commodity"}:
+        return any(p.search(text) for p in _MACRO_OFFICIAL_HEADLINE_PATTERNS)
+    return any(p.search(text) for p in _EQ_OFFICIAL_HEADLINE_PATTERNS)
+
+
+def _build_volatility_news_query(sym: str, entity: PortfolioEntity, entity_terms: list[str]) -> str:
+    chunks: list[str] = []
+    s = _safe_symbol(sym)
+    if s:
+        chunks.append(s)
+    inst = entity.instrument
+    if inst:
+        dn_inst = (inst.display_name or "").strip()
+        if dn_inst and dn_inst.upper() != s.upper():
+            chunks.append(dn_inst if " " not in dn_inst else f'"{dn_inst}"')
+    en = (entity.name or "").strip()
+    if en and en.lower() not in {c.lower() for c in chunks}:
+        chunks.append(en if " " not in en else f'"{en}"')
+    for t in entity_terms:
+        tt = t.strip()
+        if tt and tt.lower() not in {c.lower().strip('"') for c in chunks}:
+            chunks.append(tt)
+    chunks = chunks[:10]
+    if not chunks:
+        return ""
+    if len(chunks) == 1:
+        return f"{chunks[0]} stock"
+    return " OR ".join(chunks[:8])
+
+
+def _volatility_news_window_bounds(focus_ts: int, half_hours: int = VOLATILITY_NEWS_HALF_HOURS) -> tuple[str, str]:
+    """±half_hours around noon UTC of the volatility day (focus_ts = day start)."""
+    noon = focus_ts + 12 * 3600
+    delta = half_hours * 3600
+    start = datetime.fromtimestamp(noon - delta, tz=timezone.utc)
+    end = datetime.fromtimestamp(noon + delta, tz=timezone.utc)
+    return start.isoformat(), end.isoformat()
+
+
+def _pub_in_window(pub_iso: str | None, ws_iso: str, we_iso: str) -> bool:
+    if not pub_iso:
+        return False
+    try:
+        pub = datetime.fromisoformat(pub_iso.replace("Z", "+00:00"))
+        ws = datetime.fromisoformat(ws_iso.replace("Z", "+00:00"))
+        we = datetime.fromisoformat(we_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return ws <= pub <= we
+
+
+def _items_from_raw_for_window(
+    raw: list[dict[str, Any]],
+    ws_iso: str,
+    we_iso: str,
+    *,
+    sym: str,
+    entity: PortfolioEntity,
+    entity_terms: list[str],
+    asset_class: str,
+    point_type: str,
+) -> tuple[list[TimelineNewsItemOut], str]:
     """
-    Deterministic demo timestamps (day starts) for 'official' blue points.
-    Not real calendar data — obvious in API label_hint / data_mode.
+    Filter by time window, relevance, and (for official) strict headline signal patterns.
+    Returns (items, news_status) where news_status is has_items | no_relevant_news.
     """
-    if not bars:
-        return []
-    times = sorted(int(b["time"]) for b in bars if b.get("time") is not None)
-    t_min, t_max = times[0], times[-1]
-    digest = _symbol_digest(symbol) + sum(ord(c) for c in (asset_class or "")) * 7
-    out: list[int] = []
-    # Roughly one point every ~14–21 days of span, max 8
-    span = max(t_max - t_min, 86400)
-    step = max(14 * 86400, span // 6)
-    cur = t_min + (digest % 86400) * 17
-    while cur <= t_max and len(out) < 8:
-        d0 = _day_start_utc(cur)
-        if t_min <= d0 <= t_max:
-            out.append(d0)
-        cur += step + ((digest >> (len(out) * 3)) % (4 * 86400))
-    # Dedup
-    seen: set[int] = set()
-    uniq = []
-    for d0 in sorted(out):
-        if d0 not in seen:
-            seen.add(d0)
-            uniq.append(d0)
-    return uniq[:6]
+
+    def _pub_ts(it: dict[str, Any]) -> float:
+        p = it.get("published_at")
+        if not p or not isinstance(p, str):
+            return 0.0
+        try:
+            return datetime.fromisoformat(p.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+
+    raw_sorted = sorted([x for x in raw if isinstance(x, dict)], key=_pub_ts, reverse=True)
+    news_out: list[TimelineNewsItemOut] = []
+    seen: set[str] = set()
+
+    for it in raw_sorted:
+        pub = it.get("published_at")
+        if not isinstance(pub, str) or not pub:
+            continue
+        if not _pub_in_window(pub, ws_iso, we_iso):
+            continue
+
+        title = (it.get("title") or "").strip() or "(no title)"
+        snippet = str(it.get("snippet") or "").strip()
+
+        if not _volatility_relevance_ok(title, snippet, sym, entity, entity_terms):
+            continue
+        if point_type == "official" and not _official_headline_matches(asset_class, title, snippet):
+            continue
+
+        dedupe = hashlib.sha256(
+            f"{title}|{it.get('url') or ''}|{pub}".encode("utf-8"),
+            usedforsecurity=False,
+        ).hexdigest()[:18]
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+
+        news_out.append(
+            TimelineNewsItemOut(
+                id=f"rss-{dedupe}",
+                title=title[:300],
+                source_name=(it.get("source") or "—")[:120],
+                source_url=it.get("url") if isinstance(it.get("url"), str) else None,
+                summary=((snippet) or "—")[:500],
+                sentiment="neutral",
+                category="official_signal" if point_type == "official" else "volatility_context",
+            )
+        )
+
+    status = "has_items" if news_out else "no_relevant_news"
+    return news_out, status
 
 
 def resolve_timeline_asset_class(db: Session, entity: PortfolioEntity, symbol: str) -> str:
     """
-    asset_class for demo official seeding: match primary or related row for this entity,
-    then fall back to instruments catalog. Ensures compare rows (ETF, crypto, etc.) use
-    their own class rather than the primary binding only.
+    Resolve asset class for the chart symbol: primary/related instruments, then catalog.
+    Used for official-event headline routing when blue markers exist.
     """
     sym = _safe_symbol(symbol)
     if not sym:
@@ -175,7 +376,6 @@ def build_timeline_points(
     symbol: str,
     period: str,
     chart_scope: str,
-    asset_class: str,
 ) -> TimelinePointsResponse:
     sym = _safe_symbol(symbol)
     access = timeline_access_out(user)
@@ -191,20 +391,7 @@ def build_timeline_points(
             data_updated_at=None,
             data_source="stale_fallback",
             stale=True,
-        )
-
-    if not access.can_interact:
-        return TimelinePointsResponse(
-            access=access,
-            symbol=sym,
-            period=period.upper(),
-            chart_scope=chart_scope,
-            range_start=0,
-            range_end=0,
-            points=[],
-            data_updated_at=None,
-            data_source="stale_fallback",
-            stale=True,
+            official_events_available=False,
         )
 
     bars, snap, stale_ohlcv = resolve_ohlcv_bars(db, sym, period.upper() if period else "1M")
@@ -221,6 +408,7 @@ def build_timeline_points(
             data_updated_at=lu,
             data_source="stale_fallback" if stale_ohlcv else "snapshot",
             stale=stale_ohlcv,
+            official_events_available=False,
         )
 
     times = [int(b["time"]) for b in bars if b.get("time") is not None]
@@ -241,21 +429,8 @@ def build_timeline_points(
             )
         )
 
-    official_days = seed_official_demo_points(sym, asset_class, bars)
-    used_vol_days = {p.time for p in points if p.point_type == "volatility"}
-    for d0 in official_days:
-        if d0 in used_vol_days:
-            continue
-        pid = f"off:{sym}:{d0}"
-        points.append(
-            TimelinePointOut(
-                id=pid,
-                point_type="official",
-                time=d0,
-                score=None,
-                label_hint="demo_official_release",
-            )
-        )
+    # Blue / official markers: reserved for structured feeds (SEC, economic calendar APIs).
+    # Do not infer from RSS; omit rather than show false causal links.
 
     points.sort(key=lambda p: (p.time, p.point_type))
 
@@ -270,6 +445,7 @@ def build_timeline_points(
         data_updated_at=lu,
         data_source="stale_fallback" if stale_ohlcv else "snapshot",
         stale=stale_ohlcv,
+        official_events_available=False,
     )
 
 
@@ -338,55 +514,11 @@ def resolve_summary_window_bounds(
     return ws, we, "point_window"
 
 
-def _placeholder_news_items(
-    symbol: str,
-    focus_ts: int,
-    point_type: str,
-    entity_terms: list[str],
-) -> list[TimelineNewsItemOut]:
-    """PLACEHOLDER news rows — swap for retrieval service later."""
-    d = datetime.fromtimestamp(focus_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-    term_snip = ", ".join(entity_terms[:3]) if entity_terms else "key narratives"
-    base_id = hashlib.md5(f"{symbol}:{focus_ts}:{point_type}".encode()).hexdigest()[:12]
-
-    items = [
-        TimelineNewsItemOut(
-            id=f"{base_id}-a",
-            title=f"{symbol}: flow & positioning commentary ({d}) — sample",
-            source_name="Demo wire",
-            source_url=None,
-            summary=(
-                f"Placeholder item aligned to your terms ({term_snip}). "
-                "A future pipeline will attach real headlines and links."
-            ),
-            sentiment="neutral",
-            category="industry" if point_type == "volatility" else "official_release",
-        ),
-        TimelineNewsItemOut(
-            id=f"{base_id}-b",
-            title="Macro / policy headline window — sample",
-            source_name="Demo policy desk",
-            source_url="https://example.com/placeholder-story",
-            summary="Illustrates regulator or institution announcement slots for this window.",
-            sentiment="bearish" if point_type == "volatility" else "neutral",
-            category="policy" if point_type == "official" else "macro",
-        ),
-        TimelineNewsItemOut(
-            id=f"{base_id}-c",
-            title="Geopolitical / risk tape note — sample",
-            source_name="Demo world desk",
-            source_url=None,
-            summary="Room for conflict or shock-related items when providers are connected.",
-            sentiment="neutral",
-            category="conflict",
-        ),
-    ]
-    return items
-
-
 def get_timeline_window(
     *,
-    user: User,
+    db: Session,
+    entity: PortfolioEntity,
+    _user: User,
     point_id: str,
     entity_terms: list[str],
 ) -> TimelineWindowResponse | None:
@@ -394,17 +526,123 @@ def get_timeline_window(
     if not parsed:
         return None
     ptype, sym, focus_ts = parsed
-    ws, we = _window_bounds_iso(focus_ts)
-    items = _placeholder_news_items(sym, focus_ts, ptype, entity_terms)
+    asset_class = resolve_timeline_asset_class(db, entity, sym)
+
+    if ptype == "volatility":
+        ws, we = _volatility_news_window_bounds(focus_ts)
+        query = _build_volatility_news_query(sym, entity, entity_terms)
+        if not query:
+            return TimelineWindowResponse(
+                point_id=point_id,
+                point_type="volatility",
+                focus_time=focus_ts,
+                window_start_iso=ws,
+                window_end_iso=we,
+                symbol=sym,
+                items=[],
+                data_mode="live",
+                news_status="no_relevant_news",
+                status_message="No relevant news found for this move",
+            )
+        raw, _q, err, _hit = fetch_entity_news_by_query(
+            entity_id=str(entity.id),
+            query=query,
+            limit=80,
+        )
+        if err == "fetch_failed":
+            return TimelineWindowResponse(
+                point_id=point_id,
+                point_type="volatility",
+                focus_time=focus_ts,
+                window_start_iso=ws,
+                window_end_iso=we,
+                symbol=sym,
+                items=[],
+                data_mode="live",
+                news_status="fetch_failed",
+                status_message="News could not be loaded for this window. Try again later.",
+            )
+        items, _filt = _items_from_raw_for_window(
+            raw,
+            ws,
+            we,
+            sym=sym,
+            entity=entity,
+            entity_terms=entity_terms,
+            asset_class=asset_class,
+            point_type="volatility",
+        )
+        return TimelineWindowResponse(
+            point_id=point_id,
+            point_type="volatility",
+            focus_time=focus_ts,
+            window_start_iso=ws,
+            window_end_iso=we,
+            symbol=sym,
+            items=items,
+            data_mode="live",
+            news_status="has_items" if items else "no_relevant_news",
+            status_message=None if items else "No relevant news found for this move",
+        )
+
+    # official / blue — same fetch as volatility; strict headline patterns applied in _items_from_raw_for_window
+    # (avoid Google RSS "AND" fragility; prefer local high-confidence filtering).
+    ws_o, we_o = _volatility_news_window_bounds(focus_ts)
+    query_o = _build_volatility_news_query(sym, entity, entity_terms)
+    if not query_o:
+        return TimelineWindowResponse(
+            point_id=point_id,
+            point_type="official",
+            focus_time=focus_ts,
+            window_start_iso=ws_o,
+            window_end_iso=we_o,
+            symbol=sym,
+            items=[],
+            data_mode="live",
+            news_status="no_relevant_news",
+            status_message="No relevant news found for this move",
+        )
+    raw_o, _q2, err_o, _hit2 = fetch_entity_news_by_query(
+        entity_id=str(entity.id),
+        query=query_o,
+        limit=80,
+    )
+    if err_o == "fetch_failed":
+        return TimelineWindowResponse(
+            point_id=point_id,
+            point_type="official",
+            focus_time=focus_ts,
+            window_start_iso=ws_o,
+            window_end_iso=we_o,
+            symbol=sym,
+            items=[],
+            data_mode="live",
+            news_status="fetch_failed",
+            status_message="News could not be loaded for this window. Try again later.",
+        )
+    items_o, _st_o = _items_from_raw_for_window(
+        raw_o,
+        ws_o,
+        we_o,
+        sym=sym,
+        entity=entity,
+        entity_terms=entity_terms,
+        asset_class=asset_class,
+        point_type="official",
+    )
     return TimelineWindowResponse(
         point_id=point_id,
-        point_type="volatility" if ptype == "volatility" else "official",
+        point_type="official",
         focus_time=focus_ts,
-        window_start_iso=ws,
-        window_end_iso=we,
+        window_start_iso=ws_o,
+        window_end_iso=we_o,
         symbol=sym,
-        items=items,
-        data_mode="placeholder",
+        items=items_o,
+        data_mode="live",
+        news_status="has_items" if items_o else "no_relevant_news",
+        status_message=None
+        if items_o
+        else "No headlines matched official-event criteria for this window.",
     )
 
 

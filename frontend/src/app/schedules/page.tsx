@@ -169,28 +169,41 @@ export default function SchedulesPage() {
     setName(t("schedules.standardMonitorName"));
   }, [t]);
 
-  const refresh = useCallback(async () => {
-    const fetchAlerts = typeof api.alerts === "function" ? api.alerts() : Promise.resolve([]);
-    const [portfoliosRes, s, a] = await Promise.all([
-      api.listPortfolios(),
-      api.schedules(),
-      fetchAlerts.catch(() => []),
-    ]);
+  const refreshCore = useCallback(async () => {
+    const [portfoliosRes, s] = await Promise.all([api.listPortfolios(), api.schedules()]);
     setPortfolios(portfoliosRes);
     setSchedules(s);
-    setAlerts(Array.isArray(a) ? a : []);
     setSelectedPortfolioId((pid) => pid || portfoliosRes[0]?.id || null);
   }, []);
+
+  const refreshAlerts = useCallback(async () => {
+    if (typeof api.alerts !== "function") {
+      setAlerts([]);
+      return;
+    }
+    try {
+      const a = await api.alerts();
+      setAlerts(Array.isArray(a) ? a : []);
+    } catch {
+      setAlerts([]);
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await refreshCore();
+    void refreshAlerts();
+  }, [refreshCore, refreshAlerts]);
 
   useEffect(() => {
     (async () => {
       try {
-        await refresh();
+        await refreshCore();
       } catch (e: unknown) {
         setError(parseApiError(e));
       }
     })();
-  }, [refresh]);
+    void refreshAlerts();
+  }, [refreshCore, refreshAlerts]);
 
   useEffect(() => {
     if (!selectedPortfolioId) {
@@ -272,7 +285,7 @@ export default function SchedulesPage() {
         model: model.trim() || undefined,
         impact_threshold: typeof impactThreshold === "number" ? impactThreshold : undefined,
       });
-      await refresh();
+      await refreshAll();
       setToast(t("schedules.createSuccessToast"));
       window.setTimeout(() => setToast(null), 6500);
     } catch (e: unknown) {
@@ -305,7 +318,7 @@ export default function SchedulesPage() {
     setActionBusy((prev) => ({ ...prev, [id]: "pause" }));
     try {
       await api.pauseSchedule(id);
-      await refresh();
+      await refreshAll();
     } catch (e: unknown) {
       setError(parseApiError(e));
     } finally {
@@ -322,7 +335,7 @@ export default function SchedulesPage() {
     setActionBusy((prev) => ({ ...prev, [id]: "resume" }));
     try {
       await api.resumeSchedule(id);
-      await refresh();
+      await refreshAll();
     } catch (e: unknown) {
       setError(parseApiError(e));
     } finally {
@@ -339,7 +352,7 @@ export default function SchedulesPage() {
     setActionBusy((prev) => ({ ...prev, [id]: "delete" }));
     try {
       await api.deleteSchedule(id);
-      await refresh();
+      await refreshAll();
     } catch (e: unknown) {
       setError(parseApiError(e));
     } finally {

@@ -9,7 +9,9 @@ from app.core.feature_access import FeatureKey, can_access_feature
 from app.models.document import SourceDocument
 from app.models.document_analysis import DocumentAnalysis
 from app.models.user import User
-from app.services.ai.providers import AnalysisResult, get_provider
+from app.services.ai.providers import AnalysisResult
+from app.services.ai.router import get_provider_for_role
+from app.services.runtime_flags import RuntimeFlagKey, ai_feature_enabled
 
 
 def analyze_documents(
@@ -32,8 +34,10 @@ def analyze_documents(
     owner = db.get(User, acting_user_id)
     if not owner or not can_access_feature(owner, FeatureKey.DOCUMENT_LLM_ANALYSIS):
         return 0
+    if not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_DOCUMENT_ANALYSIS):
+        return 0
 
-    provider = get_provider()
+    provider = get_provider_for_role("summarize")
     provider_name = getattr(provider, "provider", "unknown")
     model = getattr(provider, "model", "v1")
 

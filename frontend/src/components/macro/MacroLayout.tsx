@@ -31,26 +31,60 @@ export function MacroLayout({ isActive = true }: MacroLayoutProps) {
 
   useEffect(() => {
     if (!isActive) return;
-    for (const slug of MACRO_CATEGORY_SLUGS) {
-      void queryClient.prefetchQuery({
-        queryKey: ["macro", "news", slug, NEWS_PRELOAD_LIMIT],
-        queryFn: () => api.macroNews(slug, null, NEWS_PRELOAD_LIMIT),
-        staleTime: STALE_MACRO_NEWS_MS
-      });
-      void queryClient.prefetchQuery({
-        queryKey: ["market", "indices", slug],
-        queryFn: () => api.marketIndices(slug),
-        staleTime: STALE_MARKET_MS
-      });
-    }
-    for (const sym of ["SPX", "^GSPC", "BTC-USD"]) {
-      void queryClient.prefetchQuery({
-        queryKey: ["market", "quote", sym],
-        queryFn: () => api.quote(sym),
-        staleTime: STALE_MARKET_MS
-      });
-    }
-  }, [queryClient, isActive]);
+    const primary = selectedCategory ?? "general";
+
+    // Prefetch only the selected category immediately.
+    void queryClient.prefetchQuery({
+      queryKey: ["macro", "news", primary, NEWS_PRELOAD_LIMIT],
+      queryFn: () => api.macroNews(primary, null, NEWS_PRELOAD_LIMIT),
+      staleTime: STALE_MACRO_NEWS_MS
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ["market", "indices", primary],
+      queryFn: () => api.marketIndices(primary),
+      staleTime: STALE_MARKET_MS
+    });
+
+    // Defer the rest to idle time to avoid saturating first load.
+    const rest = MACRO_CATEGORY_SLUGS.filter((s) => s !== primary);
+    const prefetchRest = () => {
+      for (const slug of rest) {
+        void queryClient.prefetchQuery({
+          queryKey: ["macro", "news", slug, NEWS_PRELOAD_LIMIT],
+          queryFn: () => api.macroNews(slug, null, NEWS_PRELOAD_LIMIT),
+          staleTime: STALE_MACRO_NEWS_MS
+        });
+        void queryClient.prefetchQuery({
+          queryKey: ["market", "indices", slug],
+          queryFn: () => api.marketIndices(slug),
+          staleTime: STALE_MARKET_MS
+        });
+      }
+      for (const sym of ["SPX", "^GSPC", "BTC-USD"]) {
+        void queryClient.prefetchQuery({
+          queryKey: ["market", "quote", sym],
+          queryFn: () => api.quote(sym),
+          staleTime: STALE_MARKET_MS
+        });
+      }
+    };
+
+    let idleId: number | null = null;
+    const timeoutId = setTimeout(() => {
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        idleId = window.requestIdleCallback(prefetchRest, { timeout: 2500 });
+      } else {
+        prefetchRest();
+      }
+    }, 350);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (idleId && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [queryClient, isActive, selectedCategory]);
 
   const categoryNewsQ = useQuery({
     queryKey: ["macro", "news", selectedCategory ?? "", NEWS_PRELOAD_LIMIT],

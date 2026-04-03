@@ -3,6 +3,8 @@
 import dynamic from "next/dynamic";
 import { EntityInstitutionBiasBlock } from "@/components/entity/EntityInstitutionBiasBlock";
 import { EntityRatingDistributionBlock } from "@/components/entity/EntityRatingDistributionBlock";
+import { EntitySeriesVolumeBlock } from "@/components/entity/EntitySeriesVolumeBlock";
+import { EntitySplitChart } from "@/components/entity/EntitySplitChart";
 
 const Research3DViewer = dynamic(
   () => import("./Research3DViewer").then((m) => ({ default: m.Research3DViewer })),
@@ -41,6 +43,8 @@ export type ResearchChartProps = {
   type: ChartType;
   hasContext?: boolean;
   entityId?: string | null;
+  /** Entity-metric series period (same API as Target Data blocks). Defaults to 1M. */
+  period?: string;
   onRemove?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -50,12 +54,29 @@ function is3DType(t: ChartType): t is "three_d" | "three_d_narrative" | "three_d
   return t === "three_d" || t === "three_d_narrative" || t === "three_d_derivative";
 }
 
-function isComingUpType(t: ChartType): t is "institution_bias" | "rating_distribution" {
+function isDbBackedAnalysisType(t: ChartType): t is "institution_bias" | "rating_distribution" {
   return t === "institution_bias" || t === "rating_distribution";
 }
 
-export function ResearchChart({ type, hasContext = false, entityId, onRemove, onMoveUp, onMoveDown }: ResearchChartProps) {
-  if (isComingUpType(type)) {
+function entitySeriesKind(
+  type: ChartType
+): "coverage" | "target_search" | "keywords_search" | null {
+  if (type === "coverage") return "coverage";
+  if (type === "momentum") return "target_search";
+  if (type === "sentiment" || type === "custom_index") return "keywords_search";
+  return null;
+}
+
+export function ResearchChart({
+  type,
+  hasContext = false,
+  entityId,
+  period = "1M",
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+}: ResearchChartProps) {
+  if (isDbBackedAnalysisType(type)) {
     return (
       <div className="relative flex h-full min-h-[120px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
         {hasContext && entityId ? (
@@ -91,6 +112,67 @@ export function ResearchChart({ type, hasContext = false, entityId, onRemove, on
         onMoveUp={onMoveUp}
         onMoveDown={onMoveDown}
       />
+    );
+  }
+
+  if (hasContext && entityId && type === "asset_price") {
+    return (
+      <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-2">
+        <div className="flex items-center justify-between gap-1">
+          <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+          <div className="flex items-center gap-0.5">
+            {onMoveUp && (
+              <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">
+                ↑
+              </button>
+            )}
+            {onMoveDown && (
+              <button type="button" onClick={onMoveDown} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move down">
+                ↓
+              </button>
+            )}
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300" title="Remove block">
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="mt-1 min-h-0 flex-1 overflow-hidden">
+          <EntitySplitChart entityId={entityId} period={period} rowHeight={200} />
+        </div>
+      </div>
+    );
+  }
+
+  const seriesKind = entitySeriesKind(type);
+  if (hasContext && entityId && seriesKind) {
+    return (
+      <div className="relative flex h-full min-h-[120px] flex-col rounded-lg border border-slate-700 bg-slate-900/50 p-2">
+        <div className="flex items-center justify-between gap-1">
+          <span className="text-xs font-medium text-slate-400">{CHART_LABELS[type]}</span>
+          <div className="flex items-center gap-0.5">
+            {onMoveUp && (
+              <button type="button" onClick={onMoveUp} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move up">
+                ↑
+              </button>
+            )}
+            {onMoveDown && (
+              <button type="button" onClick={onMoveDown} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300" title="Move down">
+                ↓
+              </button>
+            )}
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300" title="Remove block">
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="mt-1 min-h-0 flex-1">
+          <EntitySeriesVolumeBlock entityId={entityId} period={period} kind={seriesKind} />
+        </div>
+      </div>
     );
   }
 
@@ -133,7 +215,10 @@ export function ResearchChart({ type, hasContext = false, entityId, onRemove, on
       </div>
       <div className="mt-2 flex flex-1 flex-col items-center justify-center gap-1 rounded bg-slate-800/40 p-3 text-center text-sm text-slate-500">
         {hasContext ? (
-          "Block placeholder — same-timeline series will render here when data is available."
+          <>
+            <span className="font-medium text-slate-300">Not available</span>
+            <span className="text-xs text-slate-500">This block type is not wired in this build.</span>
+          </>
         ) : (
           <>
             <span className="font-medium text-amber-200/90">No research target configured</span>

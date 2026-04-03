@@ -47,7 +47,6 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import get_current_user, require_feature
 from app.core.config import settings
-from app.core.feature_access import FeatureKey
 from app.core.limits import (
     MAX_ENTITIES_PER_PORTFOLIO,
     MAX_ITEMS_PER_ENTITY,
@@ -76,7 +75,17 @@ from app.services.subscriptions import (
     remove_entity_subscriptions,
 )
 from app.services.target_entity_sync import delete_target_entity_record, upsert_target_entity_for_portfolio_entity
-from app.services.entity_metrics_pipeline import sync_entity_search_trend
+from app.services.entity_metrics_pipeline import (
+    entity_target_and_narrative_keywords,
+    explain_chart_3d_absence,
+    explain_search_volumes_absence,
+    get_chart_3d_payload,
+    get_entity_keywords_search_timeseries,
+    get_entity_target_search_timeseries,
+    last_keywords_search_success_at,
+    last_target_search_success_at,
+    sync_entity_search_trend,
+)
 from app.services.entity_references import remove_entity_from_research_layouts
 from app.services.core_data_diag import record_first_paint_envelope, record_snapshot_hit
 from app.services.entity_event_timeline import (
@@ -84,7 +93,6 @@ from app.services.entity_event_timeline import (
     build_timeline_points,
     get_timeline_window,
     resolve_timeline_asset_class,
-    timeline_can_interact,
 )
 from app.schemas.entity_timeline import (
     AiSummaryRequest,
@@ -119,24 +127,34 @@ from app.schemas.portfolios import (
     TermsReplace,
     TimeSeriesOut,
     TimeSeriesPoint,
+    SentimentSeriesOut,
+    SentimentSeriesPoint,
     TrendingOut,
-    EntitySearchTrendSeriesOut,
-    SearchTrendPoint,
+    EntityKeywordsSearchSeriesOut,
+    EntityTargetSearchSeriesOut,
+    KeywordsSearchPoint,
+    TargetSearchPoint,
     EntityMetricPoint,
     EntityMetricSeriesOut,
+    TripleSignalSeriesOut,
+    InstitutionBiasOut,
+    RatingDistributionOut,
     EntityNewsItemOut,
     EntityNewsOut,
 )
 from app.services.entity_chart_3d import normalize_chart_3d_range
-from app.services.entity_metrics_pipeline import get_chart_3d_payload, get_entity_search_trend_timeseries
 from app.services.entity_metrics_service import get_entity_metric_timeseries
 from app.services.entity_news_service import fetch_entity_news
+from app.services.entity_sentiment_series_ai import compute_sentiment_series_delta, read_cached_sentiment_series
+from app.services.triple_signal_metrics import read_entity_triple_signal_series_aligned
 from app.services.narrative_metrics import (
     entity_metric_timeseries_bundle,
     entity_quadrant_current_bundle,
     entity_quadrant_history_bundle,
     entity_trending_bundle,
 )
+from app.services.runtime_flags import RuntimeFlagKey, ai_feature_enabled
+from app.core.feature_access import FeatureKey, can_access_feature
 
 MAX_TERMS = 15
 MAX_COMPARISON_INSTRUMENTS = 4
@@ -145,8 +163,17 @@ _WORKSPACE_CHART_TYPES = frozenset({
     "technical", "sentiment", "quadrant", "3d",
     "overlay_technical", "overlay_sentiment",
     "split_technical", "split_sentiment",
-    "series_search_volume", "series_coverage_volume",
-    "metric_momentum", "metric_acceleration",
+    "series_search_volume",  # legacy client → keywords on read
+    "series_target_search_volume",
+    "series_keywords_search_volume",
+    "series_coverage_volume",
+    "series_triple_signal",
+    "metric_momentum",
+    "metric_acceleration",
+    "metric_momentum_target",
+    "metric_acceleration_target",
+    "metric_momentum_keywords",
+    "metric_acceleration_keywords",
     "analysis_3d", "analysis_institution_bias", "analysis_rating_distribution",
 })
 
@@ -1069,8 +1096,8 @@ def _mock_quadrant_history(terms: list[str], period: str) -> list[QuadrantHistor
         points.append(
             QuadrantHistoryPoint(
                 t=day_str,
-                coverage_momentum=round(cm, 2),
-                search_momentum=round(sm, 2),
+                coverage_volume=max(0.0, min(100.0, 50.0 + cm)),
+                keywords_search_volume=max(0.0, min(500.0, 50.0 + sm)),
             )
         )
     period_upper = period.strip().upper()
@@ -1095,13 +1122,13 @@ def _mock_quadrant_history(terms: list[str], period: str) -> list[QuadrantHistor
 
 
 def _mock_quadrant(terms: list[str]) -> QuadrantOut:
-    """Current-point quadrant: search_momentum and coverage_momentum from terms (mock)."""
+    """Unused mock scaffold (deterministic scalars)."""
     seed = "|".join(sorted((t or "").strip().lower() for t in terms)) or "entity"
-    search_momentum = (hash((seed, "search_m")) % 100) - 50  # -50..50
-    coverage_momentum = (hash((seed, "coverage_m")) % 100) - 50
+    k = float((hash((seed, "k")) % 101))
+    c = float((hash((seed, "c")) % 101))
     return QuadrantOut(
-        search_momentum=float(search_momentum),
-        coverage_momentum=float(coverage_momentum),
+        keywords_search_volume=k,
+        coverage_volume=c,
         last_updated_at=None,
         stale=True,
         data_updated_at=None,
@@ -1124,21 +1151,93 @@ def get_search_volume_series(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TimeSeriesOut:
-    """Time series of search_trend from DB snapshots only."""
+    """Deprecated alias: narrative keywords search volume (same as /keywords-search-volume-series)."""
+    return get_keywords_search_volume_series(entity_id, period, db, current_user)
+
+
+@router.get("/entities/{entity_id}/keywords-search-volume-series", response_model=TimeSeriesOut)
+def get_keywords_search_volume_series(
+    entity_id: str,
+    period: str = "1M",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TimeSeriesOut:
+    """Time series: sum of independent narrative-keyword Google Trends indices (per day)."""
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
         select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
-            selectinload(PortfolioEntity.terms)
+            selectinload(PortfolioEntity.terms),
+            selectinload(PortfolioEntity.instrument),
         )
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    raw_pts, last, stale = entity_metric_timeseries_bundle(db, entity.id, "search_trend", period)
+    raw_pts, _last_any, _stale_pts = entity_metric_timeseries_bundle(db, entity.id, "keywords_search_volume", period)
     points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
-    sig = _entity_signal_envelope(last, stale)
-    record_snapshot_hit("entity_search_volume_series")
+    tgt, narr = entity_target_and_narrative_keywords(entity)
+    last_st = last_keywords_search_success_at(db, entity.id)
+    stale = len(points) == 0
+    if stale:
+        sig = {
+            "last_updated_at": last_st.isoformat() if last_st else None,
+            "data_updated_at": last_st.isoformat() if last_st else None,
+            "data_source": "unavailable",
+            "loading_state": "no_data",
+            "message": explain_search_volumes_absence(db, entity.id, has_target=bool(tgt), has_narrative_terms=bool(narr)),
+            "stale": True,
+        }
+    else:
+        sig = _entity_signal_envelope(last_st, False)
+    record_snapshot_hit("entity_keywords_search_volume_series")
     record_first_paint_envelope(
-        "entity_search_volume_series",
+        "entity_keywords_search_volume_series",
+        loading_state=str(sig["loading_state"]),
+        data_source=str(sig["data_source"]),
+    )
+    return TimeSeriesOut(period=period, points=points, data=points, **sig)
+
+
+@router.get("/entities/{entity_id}/target-search-volume-series", response_model=TimeSeriesOut)
+def get_target_search_volume_series(
+    entity_id: str,
+    period: str = "1M",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TimeSeriesOut:
+    """Time series: primary instrument symbol Google Trends index (ticker / target intent)."""
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
+            selectinload(PortfolioEntity.terms),
+            selectinload(PortfolioEntity.instrument),
+        )
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    raw_pts, _last_any, _stale_pts = entity_metric_timeseries_bundle(db, entity.id, "target_search_volume", period)
+    points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
+    tgt, narr = entity_target_and_narrative_keywords(entity)
+    last_tt = last_target_search_success_at(db, entity.id)
+    stale = len(points) == 0
+    if stale:
+        msg = (
+            "Link a primary instrument to load target (ticker) search volume."
+            if not tgt
+            else explain_search_volumes_absence(db, entity.id, has_target=True, has_narrative_terms=bool(narr))
+        )
+        sig = {
+            "last_updated_at": last_tt.isoformat() if last_tt else None,
+            "data_updated_at": last_tt.isoformat() if last_tt else None,
+            "data_source": "unavailable",
+            "loading_state": "no_data",
+            "message": msg,
+            "stale": True,
+        }
+    else:
+        sig = _entity_signal_envelope(last_tt, False)
+    record_snapshot_hit("entity_target_search_volume_series")
+    record_first_paint_envelope(
+        "entity_target_search_volume_series",
         loading_state=str(sig["loading_state"]),
         data_source=str(sig["data_source"]),
     )
@@ -1173,14 +1272,57 @@ def get_coverage_volume_series(
     return TimeSeriesOut(period=period, points=points, data=points, **sig)
 
 
-@router.get("/entities/{entity_id}/sentiment-series", response_model=TimeSeriesOut)
+@router.get("/entities/{entity_id}/triple-signal-series", response_model=TripleSignalSeriesOut)
+def get_triple_signal_series(
+    entity_id: str,
+    period: str = "3M",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TripleSignalSeriesOut:
+    """DB-backed normalized triple signal lines (trading/news/search), no provider calls in request path."""
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    p = (period or "3M").strip().upper()
+    days = 30 if p in {"1M", "30D"} else 180 if p in {"6M", "1Y", "MAX"} else 90
+    payload = read_entity_triple_signal_series_aligned(db, entity.id, period_days=days)
+    axis = list(payload.get("axis") or [])
+    trading = list(payload.get("trading_activity") or [])
+    news = list(payload.get("news_volume") or [])
+    search = list(payload.get("search_volume") or [])
+    last_updated = payload.get("last_updated_at")
+    stale = not any(v is not None for v in trading + news + search)
+    return TripleSignalSeriesOut(
+        period=p,
+        axis=axis,
+        trading_activity=trading,
+        news_volume=news,
+        search_volume=search,
+        last_updated_at=last_updated,
+        data_updated_at=last_updated,
+        stale=stale,
+        data_source="snapshot" if not stale else "unavailable",
+    )
+
+
+@router.get("/entities/{entity_id}/sentiment-series", response_model=SentimentSeriesOut)
 def get_sentiment_series(
     entity_id: str,
     period: str = "1M",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> TimeSeriesOut:
-    """Time series of sentiment_score from DB snapshots only."""
+) -> SentimentSeriesOut:
+    """
+    AI-backed sentiment series from normalized news:
+    - Uses normalized_news_documents as corpus
+    - Compares each bucket vs prior equal-length baseline window (delta sentiment)
+    Gating:
+    - Admin-only today (feature tiers)
+    - Runtime-flagged (ENABLE_AI_FEATURES + ENABLE_AI_NEWS_SUMMARY)
+    """
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
         select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
@@ -1189,16 +1331,98 @@ def get_sentiment_series(
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    raw_pts, last, stale = entity_metric_timeseries_bundle(db, entity.id, "sentiment_score", period)
-    points = [TimeSeriesPoint(t=p["t"], value=p["value"]) for p in raw_pts]
-    sig = _entity_signal_envelope(last, stale)
-    record_snapshot_hit("entity_sentiment_series")
-    record_first_paint_envelope(
-        "entity_sentiment_series",
-        loading_state=str(sig["loading_state"]),
-        data_source=str(sig["data_source"]),
+
+    # Feature tier gate (admin-only today). Return an honest 200 w/ empty points (not fake).
+    if not can_access_feature(current_user, FeatureKey.ENTITY_SENTIMENT_AI):
+        return SentimentSeriesOut(
+            period=period,
+            points=[],
+            data=[],
+            last_updated_at=None,
+            data_updated_at=None,
+            stale=True,
+            data_source="disabled",
+            loading_state="disabled",
+            message="AI sentiment requires a plan with AI access.",
+            eta_hint=None,
+        )
+
+    # Runtime flags: do not call any provider when disabled.
+    if not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_NEWS_SUMMARY):
+        return SentimentSeriesOut(
+            period=period,
+            points=[],
+            data=[],
+            last_updated_at=None,
+            data_updated_at=None,
+            stale=True,
+            data_source="disabled_by_runtime_flag",
+            loading_state="disabled",
+            message="AI sentiment series is disabled by runtime flag.",
+            eta_hint=None,
+        )
+
+    # Clamp >1Y requests to 1Y to cap AI cost.
+    p_norm = str((period or "1M").strip().upper())
+    if p_norm not in {"1M", "3M", "6M", "1Y", "MAX"}:
+        p_norm = "3M"
+    if p_norm == "MAX":
+        p_norm = "1Y"
+
+    # Non-blocking behavior: return cached buckets immediately; compute missing in background.
+    cached_pts, missing_count, baseline_cached, _step = read_cached_sentiment_series(db, entity_id=entity.id, period=p_norm)
+    out_pts = [
+        SentimentSeriesPoint(
+            t=p.t,
+            sentiment_score=float(p.sentiment_score),
+            sentiment_label=p.sentiment_label,
+            confidence=p.confidence,
+        )
+        for p in cached_pts
+    ]
+
+    eta_hint = "≈1–3s" if p_norm in {"1M", "3M"} else "≈3–10s"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # If anything missing, enqueue background compute (best-effort) and return partial/computing state.
+    if missing_count > 0 or not baseline_cached:
+        try:
+            from app.worker.celery_app import celery_app
+
+            celery_app.send_task(
+                "app.worker.tasks.compute_entity_sentiment_series",
+                args=[str(entity.id), p_norm],
+            )
+        except Exception:
+            logger.warning("sentiment-series enqueue failed entity_id=%s", entity.id, exc_info=True)
+
+        state = "computing" if len(out_pts) == 0 else "partial"
+        return SentimentSeriesOut(
+            period=p_norm,
+            points=out_pts,
+            data=out_pts,
+            last_updated_at=now_iso,
+            data_updated_at=now_iso,
+            stale=False,
+            data_source="ai_news_delta_cache",
+            loading_state=state,
+            message="Computing (AI)..." if state == "computing" else "Updating…",
+            eta_hint=eta_hint,
+        )
+
+    record_snapshot_hit("entity_sentiment_series_ai")
+    return SentimentSeriesOut(
+        period=p_norm,
+        points=out_pts,
+        data=out_pts,
+        last_updated_at=now_iso,
+        data_updated_at=now_iso,
+        stale=False,
+        data_source="ai_news_delta_cache",
+        loading_state="complete",
+        message=None,
+        eta_hint=eta_hint,
     )
-    return TimeSeriesOut(period=period, points=points, data=points, **sig)
 
 
 @router.get("/entities/{entity_id}/quadrant", response_model=QuadrantOut)
@@ -1207,7 +1431,7 @@ def get_quadrant(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> QuadrantOut:
-    """Current quadrant from DB snapshots: momentum(search_trend) and momentum(coverage_volume)."""
+    """Current quadrant: keywords_search_volume (y) and coverage_volume (x)."""
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
         select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
@@ -1224,7 +1448,7 @@ def get_quadrant(
         loading_state=str(sig["loading_state"]),
         data_source=str(sig["data_source"]),
     )
-    return QuadrantOut(search_momentum=sv, coverage_momentum=cv, **sig)
+    return QuadrantOut(keywords_search_volume=sv, coverage_volume=cv, **sig)
 
 
 @router.get("/entities/{entity_id}/quadrant-history", response_model=QuadrantHistoryOut)
@@ -1246,7 +1470,12 @@ def get_quadrant_history(
     period_upper = (period.strip().upper() or "1M")
     raw_pts, last, stale = entity_quadrant_history_bundle(db, entity.id, period)
     points = [
-        QuadrantHistoryPoint(t=p["t"], coverage_momentum=p["coverage_momentum"], search_momentum=p["search_momentum"]) for p in raw_pts
+        QuadrantHistoryPoint(
+            t=p["t"],
+            coverage_volume=p["coverage_volume"],
+            keywords_search_volume=p["keywords_search_volume"],
+        )
+        for p in raw_pts
     ]
     sig = _entity_signal_envelope(last, stale)
     record_snapshot_hit("entity_quadrant_history")
@@ -1290,6 +1519,98 @@ def get_trending(
     )
 
 
+def _clamp100(x: float) -> float:
+    return max(0.0, min(100.0, float(x)))
+
+
+@router.get("/entities/{entity_id}/analysis/institution-bias", response_model=InstitutionBiasOut)
+def get_institution_bias(
+    entity_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> InstitutionBiasOut:
+    """
+    DB-only heuristic proxy for 'institution bias' (no external APIs, no AI).
+    Uses stored momentum/coverage/sentiment deltas as a directional signal only.
+    """
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    search_m, coverage_m, sentiment_change, _trend_label, last, stale = entity_trending_bundle(db, entity.id)
+    sig = _entity_signal_envelope(last, stale)
+
+    score = 50.0 + (0.6 * float(search_m)) + (0.6 * float(coverage_m)) + (0.2 * float(sentiment_change))
+    score = _clamp100(score)
+    if score >= 60:
+        bias = "Bullish"
+    elif score <= 40:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+
+    bullish = _clamp100((score - 50.0) * 2.0)
+    bearish = _clamp100((50.0 - score) * 2.0)
+    neutral = _clamp100(100.0 - max(bullish, bearish))
+
+    lu = sig.get("last_updated_at")
+    return InstitutionBiasOut(
+        bias_label=bias,
+        score=round(score, 2),
+        bullish_pct=round(bullish, 2),
+        neutral_pct=round(neutral, 2),
+        bearish_pct=round(bearish, 2),
+        last_updated_at=lu,
+        data_updated_at=lu,
+        **sig,
+    )
+
+
+@router.get("/entities/{entity_id}/analysis/rating-distribution", response_model=RatingDistributionOut)
+def get_rating_distribution(
+    entity_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> RatingDistributionOut:
+    """
+    DB-only heuristic proxy for rating distribution (buy/hold/sell).
+    This is NOT analyst coverage; it is derived from stored narrative metrics only.
+    """
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    search_m, coverage_m, sentiment_change, _trend_label, last, stale = entity_trending_bundle(db, entity.id)
+    sig = _entity_signal_envelope(last, stale)
+
+    score = 50.0 + (0.6 * float(search_m)) + (0.6 * float(coverage_m)) + (0.2 * float(sentiment_change))
+    score = _clamp100(score)
+    buy = _clamp100(max(0.0, score - 50.0) * 2.0)
+    sell = _clamp100(max(0.0, 50.0 - score) * 2.0)
+    hold = _clamp100(100.0 - buy - sell)
+
+    conf = 20.0 if stale else 65.0
+    conf += min(25.0, (abs(float(search_m)) + abs(float(coverage_m))) * 0.2)
+    conf = _clamp100(conf)
+
+    lu = sig.get("last_updated_at")
+    return RatingDistributionOut(
+        buy_pct=round(buy, 2),
+        hold_pct=round(hold, 2),
+        sell_pct=round(sell, 2),
+        confidence=round(conf, 2),
+        last_updated_at=lu,
+        data_updated_at=lu,
+        **sig,
+    )
+
+
 @router.get("/entities/{entity_id}/charts/3d-data", response_model=EntityChart3DDataOut)
 def get_entity_chart_3d_data(
     entity_id: str,
@@ -1298,8 +1619,7 @@ def get_entity_chart_3d_data(
     current_user: User = Depends(get_current_user),
 ) -> EntityChart3DDataOut:
     """
-    Time × search_trend (0–100) × coverage_volume: search_trend from entity_daily_metrics (Google Trends);
-    coverage may use DB, dedup, or deterministic mock when missing.
+    Time × keywords_search_volume × coverage_volume: narrative Trends aggregate + real coverage (per day).
     """
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
@@ -1309,21 +1629,21 @@ def get_entity_chart_3d_data(
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    terms = [t.term for t in entity.terms]
     rk = normalize_chart_3d_range(chart_range)
-    raw, src_status = get_chart_3d_payload(db, entity.id, terms, rk)
+    raw, src_status = get_chart_3d_payload(db, entity.id, rk)
     points = [
-        Chart3DPoint(date=str(r["date"]), search_trend=float(r["search_trend"]), coverage_volume=float(r["coverage_volume"]))
+        Chart3DPoint(
+            date=str(r["date"]),
+            keywords_search_volume=float(r["keywords_search_volume"]),
+            coverage_volume=float(r["coverage_volume"]),
+        )
         for r in raw
     ]
-    last = db.scalar(
-        select(EntityDailyMetric.last_success_at)
-        .where(EntityDailyMetric.entity_id == entity.id)
-        .order_by(EntityDailyMetric.metric_date.desc())
-        .limit(1)
-    )
-    lu = last.isoformat() if last else None
-    st = not bool(last)
+    last_st = last_keywords_search_success_at(db, entity.id)
+    lu = last_st.isoformat() if last_st else None
+    st = len(points) == 0
+    terms = [t.term for t in entity.terms]
+    msg = explain_chart_3d_absence(db, entity.id, terms, src_status) if st else None
     record_snapshot_hit("entity_chart_3d")
     return EntityChart3DDataOut(
         entity_id=str(entity.id),
@@ -1334,59 +1654,118 @@ def get_entity_chart_3d_data(
         last_updated_at=lu,
         stale=st,
         source_status=Chart3DSourceStatus(
-            search_trend=src_status["search_trend"],
+            keywords_search_volume=src_status["keywords_search_volume"],
             coverage_volume=src_status["coverage_volume"],
+            target_search_volume="n/a",
         ),
         data_updated_at=lu,
-        data_source="stale_fallback" if st else "snapshot",
+        data_source="unavailable" if st else "snapshot",
+        message=msg,
     )
 
 
-@router.get("/entities/{entity_id}/metrics/search-trend", response_model=EntitySearchTrendSeriesOut)
+@router.get("/entities/{entity_id}/metrics/search-trend", response_model=EntityKeywordsSearchSeriesOut)
 def get_entity_search_trend_series(
     entity_id: str,
     chart_range: str = Query("1m", alias="range", description="1m | 3m | 6m"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> EntitySearchTrendSeriesOut:
-    """Daily search_trend from entity_daily_metrics only (relative index 0–100, not absolute volume)."""
+) -> EntityKeywordsSearchSeriesOut:
+    """Deprecated path name: narrative keywords search volume (not target/ticker)."""
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
         select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
-            selectinload(PortfolioEntity.terms)
+            selectinload(PortfolioEntity.terms),
+            selectinload(PortfolioEntity.instrument),
         )
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    terms = [t.term for t in entity.terms]
+    tgt, narr = entity_target_and_narrative_keywords(entity)
     rk = normalize_chart_3d_range(chart_range)
-    raw, src = get_entity_search_trend_timeseries(db, entity.id, terms, rk)
-    last = db.scalar(
-        select(EntityDailyMetric.last_success_at)
-        .where(EntityDailyMetric.entity_id == entity.id)
-        .order_by(EntityDailyMetric.metric_date.desc())
-        .limit(1)
-    )
-    points = [SearchTrendPoint(date=str(r["date"]), search_trend=float(r["search_trend"])) for r in raw]
-    if not points:
-        points = [SearchTrendPoint(date=date.today().isoformat(), search_trend=0.0)]
-    lu = last.isoformat() if last else None
-    st = not bool(last)
-    record_snapshot_hit("entity_search_trend_series")
-    return EntitySearchTrendSeriesOut(
+    raw, src = get_entity_keywords_search_timeseries(db, entity.id, rk)
+    points = [KeywordsSearchPoint(date=str(r["date"]), keywords_search_volume=float(r["keywords_search_volume"])) for r in raw]
+    last_st = last_keywords_search_success_at(db, entity.id)
+    lu = last_st.isoformat() if last_st else None
+    st = len(points) == 0
+    msg = explain_search_volumes_absence(db, entity.id, has_target=bool(tgt), has_narrative_terms=bool(narr)) if st else None
+    record_snapshot_hit("entity_keywords_search_series")
+    return EntityKeywordsSearchSeriesOut(
         entity_id=str(entity.id),
         range=rk,
         points=points,
         data=points,
         last_updated_at=lu,
         stale=st,
-        source_status=Chart3DSourceStatus(search_trend=src["search_trend"], coverage_volume="mock"),
+        source_status=Chart3DSourceStatus(
+            keywords_search_volume=src.get("keywords_search_volume", "unavailable"),
+            coverage_volume="n/a",
+            target_search_volume="n/a",
+        ),
         data_updated_at=lu,
-        data_source="stale_fallback" if st else "snapshot",
+        data_source="unavailable" if st else "snapshot",
+        message=msg,
     )
 
 
-TIMELINE_PREMIUM_MESSAGE = "TIMELINE_PREMIUM_REQUIRED"
+@router.get("/entities/{entity_id}/metrics/keywords-search-volume", response_model=EntityKeywordsSearchSeriesOut)
+def get_entity_keywords_search_series(
+    entity_id: str,
+    chart_range: str = Query("1m", alias="range", description="1m | 3m | 6m"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> EntityKeywordsSearchSeriesOut:
+    return get_entity_search_trend_series(entity_id, chart_range, db, current_user)
+
+
+@router.get("/entities/{entity_id}/metrics/target-search-volume", response_model=EntityTargetSearchSeriesOut)
+def get_entity_target_search_series(
+    entity_id: str,
+    chart_range: str = Query("1m", alias="range", description="1m | 3m | 6m"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> EntityTargetSearchSeriesOut:
+    """Primary instrument symbol Trends index (per day)."""
+    eid = uuid.UUID(entity_id)
+    entity = db.scalar(
+        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id).options(
+            selectinload(PortfolioEntity.terms),
+            selectinload(PortfolioEntity.instrument),
+        )
+    )
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    tgt, narr = entity_target_and_narrative_keywords(entity)
+    rk = normalize_chart_3d_range(chart_range)
+    raw, src = get_entity_target_search_timeseries(db, entity.id, rk)
+    points = [TargetSearchPoint(date=str(r["date"]), target_search_volume=float(r["target_search_volume"])) for r in raw]
+    last_tt = last_target_search_success_at(db, entity.id)
+    lu = last_tt.isoformat() if last_tt else None
+    st = len(points) == 0
+    msg = (
+        "Link a primary instrument to load target search volume."
+        if st and not tgt
+        else explain_search_volumes_absence(db, entity.id, has_target=bool(tgt), has_narrative_terms=bool(narr))
+        if st
+        else None
+    )
+    record_snapshot_hit("entity_target_search_series")
+    return EntityTargetSearchSeriesOut(
+        entity_id=str(entity.id),
+        range=rk,
+        points=points,
+        data=points,
+        last_updated_at=lu,
+        stale=st,
+        source_status=Chart3DSourceStatus(
+            keywords_search_volume="n/a",
+            coverage_volume="n/a",
+            target_search_volume=src.get("target_search_volume", "unavailable"),
+        ),
+        data_updated_at=lu,
+        data_source="unavailable" if st else "snapshot",
+        message=msg,
+    )
 
 
 @router.get("/entities/{entity_id}/price-timeline/points", response_model=TimelinePointsResponse)
@@ -1398,7 +1777,7 @@ def get_entity_price_timeline_points(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TimelinePointsResponse:
-    """Timeline markers under price charts: volatility + demo official points."""
+    """Timeline markers under price charts: volatility + important news points."""
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
         select(PortfolioEntity)
@@ -1410,14 +1789,12 @@ def get_entity_price_timeline_points(
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    asset_class = resolve_timeline_asset_class(db, entity, symbol)
     return build_timeline_points(
         db,
         user=current_user,
         symbol=symbol,
         period=period,
         chart_scope=(chart_scope or "main").strip() or "main",
-        asset_class=asset_class,
     )
 
 
@@ -1432,15 +1809,18 @@ def get_entity_price_timeline_window(
     entity = db.scalar(
         select(PortfolioEntity)
         .where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
-        .options(selectinload(PortfolioEntity.terms))
+        .options(selectinload(PortfolioEntity.instrument), selectinload(PortfolioEntity.terms))
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    allowed, _reason = timeline_can_interact(current_user)
-    if not allowed:
-        raise HTTPException(status_code=403, detail=TIMELINE_PREMIUM_MESSAGE)
     terms = [t.term for t in entity.terms]
-    win = get_timeline_window(user=current_user, point_id=point_id, entity_terms=terms)
+    win = get_timeline_window(
+        db=db,
+        _user=current_user,
+        entity=entity,
+        point_id=point_id,
+        entity_terms=terms,
+    )
     if not win:
         raise HTTPException(status_code=400, detail="Invalid timeline point")
     return win
@@ -1453,15 +1833,37 @@ def post_entity_price_timeline_ai_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_feature(FeatureKey.TIMELINE_AI_SUMMARY)),
 ) -> AiSummaryResponse:
+    from app.services.runtime_flags import RuntimeFlagKey, ai_feature_enabled
+
+    if not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_TIMELINE_SUMMARY):
+        return AiSummaryResponse(
+            status="placeholder",
+            provider=body.provider,
+            interpretation=None,
+            summary="AI timeline summary is temporarily disabled.",
+            citations=[],
+            model_label=None,
+            detail="disabled_by_runtime_flag",
+        )
     eid = uuid.UUID(entity_id)
     entity = db.scalar(
-        select(PortfolioEntity).where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+        select(PortfolioEntity)
+        .where(PortfolioEntity.id == eid, PortfolioEntity.user_id == current_user.id)
+        .options(
+            selectinload(PortfolioEntity.instrument),
+            selectinload(PortfolioEntity.terms),
+        )
     )
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-    terms = db.scalars(select(EntityTerm).where(EntityTerm.entity_id == entity.id)).all()
-    term_strs = [t.term for t in terms]
-    win = get_timeline_window(user=current_user, point_id=body.point_id, entity_terms=term_strs)
+    term_strs = [t.term for t in entity.terms]
+    win = get_timeline_window(
+        db=db,
+        _user=current_user,
+        entity=entity,
+        point_id=body.point_id,
+        entity_terms=term_strs,
+    )
     if not win:
         raise HTTPException(status_code=400, detail="Invalid timeline point")
     return ai_summary_placeholder(

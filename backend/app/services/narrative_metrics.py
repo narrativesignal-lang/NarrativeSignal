@@ -18,6 +18,21 @@ from app.models.keyword_group import KeywordGroup
 from app.services.entity_metrics_service import get_entity_metric_timeseries
 
 
+def _latest_or_zero(values: list[dict[str, float | str]]) -> float:
+    return float(values[-1]["value"]) if values else 0.0
+
+
+def _first_derivative(points: list[dict[str, float | str]]) -> list[dict[str, float | str]]:
+    out: list[dict[str, float | str]] = []
+    prev: float | None = None
+    for p in points:
+        v = float(p["value"])
+        d = 0.0 if prev is None else round(v - prev, 6)
+        out.append({"date": p["date"], "value": d})
+        prev = v
+    return out
+
+
 def range_key_from_series_period(period: str) -> str:
     """Align chart period with entity_daily_metrics windows (search/coverage/sentiment series)."""
     p = period.strip().upper() if period else "1M"
@@ -43,25 +58,23 @@ def entity_metric_timeseries_bundle(
 ) -> tuple[list[dict], datetime | None, bool]:
     """
     Returns (points as {"t": iso_date, "value": float}, last_success_at, stale).
-    When there are no rows, emits one zero point for stable UI shape (same as portfolios routes).
+    Returns empty points when no rows exist.
     """
     rk = range_key_from_series_period(period)
     rows = get_entity_metric_timeseries(db, entity_id, metric_name, range_key=rk)
     last = entity_daily_metric_last_success(db, entity_id)
     stale = len(rows) == 0
     points: list[dict] = [{"t": str(r["date"]), "value": float(r["value"])} for r in rows]
-    if not points:
-        points = [{"t": date.today().isoformat(), "value": 0.0}]
     return points, last, stale
 
 
 def entity_quadrant_current_bundle(
     db: Session, entity_id: uuid.UUID
 ) -> tuple[float, float, datetime | None, bool]:
-    s = get_entity_metric_timeseries(db, entity_id, "momentum", range_key="3m")
+    s = get_entity_metric_timeseries(db, entity_id, "keywords_search_volume", range_key="3m")
     c = get_entity_metric_timeseries(db, entity_id, "coverage_volume", range_key="3m")
-    sv = float(s[-1]["value"]) if s else 0.0
-    cv = float(c[-1]["value"]) if c else 0.0
+    sv = _latest_or_zero(s)
+    cv = _latest_or_zero(c)
     last = entity_daily_metric_last_success(db, entity_id)
     return sv, cv, last, not bool(last)
 
@@ -70,20 +83,20 @@ def entity_quadrant_history_bundle(
     db: Session, entity_id: uuid.UUID, period: str
 ) -> tuple[list[dict], datetime | None, bool]:
     rk = range_key_from_quadrant_history_period(period)
-    s = get_entity_metric_timeseries(db, entity_id, "momentum", range_key=rk)
+    s = get_entity_metric_timeseries(db, entity_id, "keywords_search_volume", range_key=rk)
     c = get_entity_metric_timeseries(db, entity_id, "coverage_volume", range_key=rk)
-    by_date = {str(x["date"]): float(x["value"]) for x in s}
+    by_date_s = {str(x["date"]): float(x["value"]) for x in s}
+    by_date_c = {str(x["date"]): float(x["value"]) for x in c}
+    all_dates = sorted(set(by_date_s.keys()) | set(by_date_c.keys()))
     points: list[dict] = [
         {
-            "t": str(x["date"]),
-            "coverage_momentum": float(x["value"]),
-            "search_momentum": float(by_date.get(str(x["date"]), 0.0)),
+            "t": d,
+            "coverage_volume": float(by_date_c.get(d, 0.0)),
+            "keywords_search_volume": float(by_date_s.get(d, 0.0)),
         }
-        for x in c
+        for d in all_dates
     ]
     last = entity_daily_metric_last_success(db, entity_id)
-    if not points:
-        points = [{"t": date.today().isoformat(), "coverage_momentum": 0.0, "search_momentum": 0.0}]
     return points, last, not bool(last)
 
 
@@ -100,11 +113,12 @@ def trend_label_from_momenta(search_momentum: float, coverage_momentum: float, s
 def entity_trending_bundle(
     db: Session, entity_id: uuid.UUID
 ) -> tuple[float, float, float, str, datetime | None, bool]:
-    s = get_entity_metric_timeseries(db, entity_id, "momentum", range_key="3m")
+    s = get_entity_metric_timeseries(db, entity_id, "momentum_keywords", range_key="3m")
     c = get_entity_metric_timeseries(db, entity_id, "coverage_volume", range_key="3m")
+    c_momentum = _first_derivative(c)
     ss = get_entity_metric_timeseries(db, entity_id, "sentiment_score", range_key="3m")
     search_m = float(s[-1]["value"]) if s else 0.0
-    coverage_m = float(c[-1]["value"]) if c else 0.0
+    coverage_m = _latest_or_zero(c_momentum)
     sentiment_change = 0.0
     if len(ss) >= 2:
         sentiment_change = float(ss[-1]["value"]) - float(ss[-2]["value"])

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, parseApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 
 type Series = {
   axis: string[];
@@ -108,21 +109,13 @@ export function TripleSignalChartBlock({
   }, [data, innerW, innerH, padding.left, padding.top]);
 
   if (loading) {
-    return (
-      <div className="flex min-h-[160px] items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500">
-        {t("entity.loadingSeries")}
-      </div>
-    );
+    return <BlockStateMessage kind="loading" height={160} />;
   }
   if (error) {
     return <div className="rounded border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{error}</div>;
   }
   if (!data?.axis?.length || !series) {
-    return (
-      <div className="flex min-h-[160px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500">
-        {t("entity.noMetricRows")}
-      </div>
-    );
+    return <BlockStateMessage kind="no_data" height={160} reason="no metrics yet / not synced" />;
   }
 
   return (
@@ -140,7 +133,7 @@ export function TripleSignalChartBlock({
           <span className="h-2 w-2 rounded-full bg-red-500" aria-hidden /> News volume
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden /> Search trend index
+          <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden /> Keywords search (narrative)
         </span>
       </div>
     </div>

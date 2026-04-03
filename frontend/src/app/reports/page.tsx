@@ -32,6 +32,7 @@ export default function ReportsPage() {
   const [listLoading, setListLoading] = useState(false);
   const [filterLabel, setFilterLabel] = useState("");
   const [filterScheduleType, setFilterScheduleType] = useState("");
+  const [countLoading, setCountLoading] = useState(false);
 
   const scheduleTypeOptions = [
     { value: "", label: t("reports.scheduleTypeAll") },
@@ -44,12 +45,8 @@ export default function ReportsPage() {
   const loadReports = useCallback(async () => {
     setListLoading(true);
     try {
-      const [r, countRes] = await Promise.all([
-        api.reports(100, null, filterLabel || null, filterScheduleType || null),
-        api.reportCount(),
-      ]);
+      const r = await api.reports(100, null, filterLabel || null, filterScheduleType || null);
       setReports(r);
-      setReportCount(countRes.count);
       setSelected((prev: any) => {
         const still = r.find((x) => x.id === prev?.id);
         return still ?? r[0] ?? null;
@@ -62,9 +59,26 @@ export default function ReportsPage() {
     }
   }, [filterLabel, filterScheduleType]);
 
+  const loadReportCount = useCallback(async () => {
+    setCountLoading(true);
+    try {
+      const countRes = await api.reportCount();
+      setReportCount(countRes.count);
+    } catch {
+      // Keep last known count; do not block list.
+      setReportCount((prev) => prev);
+    } finally {
+      setCountLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadReports();
   }, [loadReports]);
+
+  useEffect(() => {
+    loadReportCount();
+  }, [loadReportCount]);
 
   const anySelected = Object.values(selectedIds).some(Boolean);
   const selectedCount = Object.values(selectedIds).filter(Boolean).length;
@@ -104,7 +118,7 @@ export default function ReportsPage() {
     closeDeleteConfirm();
     try {
       await api.deleteReports(ids);
-      await loadReports();
+      await Promise.all([loadReports(), loadReportCount()]);
       setSelectedIds({});
     } catch (e: unknown) {
       setError(parseApiError(e));
@@ -177,6 +191,7 @@ export default function ReportsPage() {
               ) : (
                 t("reports.retainedFallback")
               )}
+              {countLoading ? <span className="ml-2 text-[11px] text-slate-500">{t("common.loading")}</span> : null}
             </div>
             {reportCount !== null && reportCount >= FREE_PLAN_LIMITS.MAX_REPORTS ? (
               <div className="rounded border border-amber-900/50 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200">

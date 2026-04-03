@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_POOL_SOURCE_TYPE = "active_pool"
 # Max concurrently enabled symbols (new adds rejected when at cap; touches always allowed).
-ACTIVE_POOL_MAX_ENABLED = 200
+ACTIVE_POOL_MAX_ENABLED = 20
 ACTIVE_POOL_STALE_DAYS = 7
 
 _WARM_SYMBOLS_UPPER = frozenset(s.strip().upper() for s in TWELVE_WARM_POOL_SYMBOLS)
@@ -36,7 +36,7 @@ def record_active_pool_interaction(db: Session, symbol: str) -> None:
         return
     if raw.strip() != norm:
         logger.info("symbol_normalized from=%s to=%s", raw, norm)
-    if route_quote_provider(raw) != "twelvedata":
+    if route_quote_provider(raw) != "twelve":
         logger.info("active_pool skip symbol=%s reason=unsupported", norm)
         return
     mapped = map_symbol_for_twelve(norm)

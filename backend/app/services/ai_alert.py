@@ -19,6 +19,7 @@ from app.core.feature_access import FeatureKey, can_access_feature
 from app.models.monitoring import TriggeredAlert
 from app.models.report import Report
 from app.models.user import User
+from app.services.runtime_flags import RuntimeFlagKey, ai_feature_enabled
 
 
 def run_ai_alert_pipeline(
@@ -46,6 +47,8 @@ def run_ai_alert_pipeline(
             "skipped": True,
             "reason": AI_RUN_SKIP_REASON_CODE,
         }
+    if schedule_type != "general_alert" and not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_ALERTS):
+        return {"alerts_triggered": 0, "skipped": True, "reason": "disabled_by_runtime_flag"}
 
     now = datetime.now(timezone.utc)
     window_end = now
@@ -96,6 +99,8 @@ def run_ai_report_pipeline(
             "skipped": True,
             "reason": AI_RUN_SKIP_REASON_CODE,
         }
+    if not ai_feature_enabled(db, RuntimeFlagKey.ENABLE_AI_REPORT_GENERATION):
+        return {"report_created": 0, "skipped": True, "reason": "disabled_by_runtime_flag"}
 
     now = datetime.now(timezone.utc)
     window_end = now

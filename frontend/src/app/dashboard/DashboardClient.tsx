@@ -10,10 +10,8 @@ import { MacroLayout } from "@/components/macro/MacroLayout";
 import { Shell } from "@/components/Shell";
 import { SectionHelp } from "@/components/SectionHelp";
 import { featureGuideContent } from "@/content/featureGuide";
-import { api, parseApiError } from "@/lib/api";
+import { parseApiError } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-
-type Group = Awaited<ReturnType<typeof api.listGroups>>[number];
 
 type DataTab = "macro" | "entity";
 
@@ -94,148 +92,7 @@ export function DashboardClient() {
     };
   }, [router]);
 
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selected, setSelected] = useState<Group | null>(null);
-  const [series, setSeries] = useState<any[] | null>(null);
-  const [asset, setAsset] = useState<any | null>(null);
-  const [symbolInput, setSymbolInput] = useState("");
-  const [period, setPeriod] = useState<string>("1M");
-  const [ohlcv, setOhlcv] = useState<any | null>(null);
-  const [newName, setNewName] = useState("");
-  const [newTerms, setNewTerms] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [entityConfig, setEntityConfig] = useState<{ charts: string[]; market_data: string[] }>({
-    charts: [],
-    market_data: [],
-  });
-  const [addChartOpen, setAddChartOpen] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const g = await api.listGroups();
-        setGroups(g);
-        setSelected(g[0] ?? null);
-      } catch (e: unknown) {
-        setError(parseApiError(e));
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    if (!selected) {
-      setSeries(null);
-      setAsset(null);
-      setOhlcv(null);
-      setSymbolInput("");
-      setEntityConfig({ charts: [], market_data: [] });
-      return;
-    }
-    (async () => {
-      try {
-        const [s, a, configRes] = await Promise.all([
-          api.series(selected.id, 72),
-          api.getGroupAsset(selected.id),
-          api.getEntityConfig(selected.id).catch(() => ({ config: { charts: [], market_data: [] } })),
-        ]);
-        setSeries(
-          s.points.map((p: any) => ({
-            t: new Date(p.bucket_start).toLocaleString(),
-            volume: p.mention_volume,
-            momentum: p.momentum,
-            pos: p.sentiment_positive,
-            neg: p.sentiment_negative
-          }))
-        );
-        setAsset(a);
-        setSymbolInput(a?.symbol || "");
-        const cfg = configRes.config || {};
-        setEntityConfig({
-          charts: Array.isArray(cfg.charts) ? cfg.charts : [],
-          market_data: Array.isArray(cfg.market_data) ? cfg.market_data : [],
-        });
-      } catch (e: unknown) {
-        setError(parseApiError(e));
-      }
-    })();
-  }, [selected?.id]);
-
-  const saveEntityConfig = useCallback(
-    (updater: (prev: { charts: string[]; market_data: string[] }) => { charts: string[]; market_data: string[] }) => {
-      if (!selected) return;
-      setEntityConfig((prev) => {
-        const next = updater(prev);
-        api.putEntityConfig(selected.id, next).catch(() => {});
-        return next;
-      });
-    },
-    [selected]
-  );
-
-  useEffect(() => {
-    (async () => {
-      if (!asset?.symbol) {
-        setOhlcv(null);
-        return;
-      }
-      try {
-        const res = await api.ohlcv(asset.symbol, period);
-        setOhlcv(res);
-      } catch (e: unknown) {
-        setError(parseApiError(e));
-      }
-    })();
-  }, [asset?.symbol, period]);
-
-  const bars = useMemo(() => (ohlcv?.bars || []) as any[], [ohlcv]);
-
-  const selectedTerms = useMemo(() => {
-    if (!selected) return "";
-    return selected.terms.map((t) => t.term).join(", ");
-  }, [selected]);
-
-  async function createGroup() {
-    setError(null);
-    const terms = newTerms
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((term) => ({ term, is_required: false }));
-    try {
-      await api.createGroup({ name: newName, terms });
-      const g = await api.listGroups();
-      setGroups(g);
-      setSelected(g[0] ?? null);
-      setNewName("");
-      setNewTerms("");
-    } catch (e: unknown) {
-      setError(parseApiError(e));
-    }
-  }
-
-  async function deleteGroup(id: string) {
-    setError(null);
-    try {
-      await api.deleteGroup(id);
-      const g = await api.listGroups();
-      setGroups(g);
-      setSelected(g[0] ?? null);
-    } catch (e: unknown) {
-      setError(parseApiError(e));
-    }
-  }
-
-  async function saveSymbol() {
-    if (!selected) return;
-    setError(null);
-    try {
-      const next = await api.setGroupAsset(selected.id, { symbol: symbolInput.trim().toUpperCase(), provider: "stooq" });
-      setAsset(next);
-    } catch (e: unknown) {
-      setError(parseApiError(e));
-    }
-  }
-
   const guideLocale = toFeatureGuideLocale(locale);
   const macroGuideLabel = featureGuideContent.macroData[guideLocale].buttonLabel;
   const entityGuideLabel = featureGuideContent.entityData[guideLocale].buttonLabel;

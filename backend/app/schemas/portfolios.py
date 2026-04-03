@@ -147,9 +147,12 @@ class KeywordSuggestionRequest(BaseModel):
 
 class KeywordSuggestionResponse(BaseModel):
     keywords: list[str]
+    ok: bool | None = None
+    disabled: bool | None = None
+    reason: str | None = None
 
 
-# Entity analytics: search/coverage time series and quadrant (mock or real pipeline)
+# Entity analytics: search/coverage time series and quadrant
 class TimeSeriesPoint(BaseModel):
     t: str  # ISO date
     value: float
@@ -163,13 +166,34 @@ class TimeSeriesOut(BaseModel):
     stale: bool = False
     data_updated_at: str | None = None
     data_source: str = "snapshot"
-    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    loading_state: Literal["ready", "warming", "placeholder", "stale", "no_data"] = "ready"
     message: str | None = None
 
 
+# --- AI-backed sentiment series (delta vs baseline) ---
+class SentimentSeriesPoint(BaseModel):
+    t: str  # ISO date (bucket end, YYYY-MM-DD)
+    sentiment_score: float = Field(ge=-1, le=1, description="Delta vs baseline in [-1, +1]")
+    sentiment_label: Literal["bullish", "bearish", "neutral"]
+    confidence: float | None = Field(default=None, ge=0, le=100)
+
+
+class SentimentSeriesOut(BaseModel):
+    period: str
+    points: list[SentimentSeriesPoint]
+    data: list[SentimentSeriesPoint] | None = None
+    last_updated_at: str | None = None
+    stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["complete", "partial", "computing", "disabled"] = "complete"
+    message: str | None = None
+    eta_hint: str | None = None
+
+
 class QuadrantOut(BaseModel):
-    search_momentum: float
-    coverage_momentum: float
+    keywords_search_volume: float
+    coverage_volume: float
     last_updated_at: str | None = None
     stale: bool = False
     data_updated_at: str | None = None
@@ -180,8 +204,8 @@ class QuadrantOut(BaseModel):
 
 class QuadrantHistoryPoint(BaseModel):
     t: str  # ISO date
-    coverage_momentum: float
-    search_momentum: float
+    coverage_volume: float
+    keywords_search_volume: float
 
 
 class QuadrantHistoryOut(BaseModel):
@@ -210,17 +234,51 @@ class TrendingOut(BaseModel):
     message: str | None = None
 
 
+class InstitutionBiasOut(BaseModel):
+    """DB-only heuristic bias proxy (non-AI)."""
+
+    bias_label: str  # Bullish | Neutral | Bearish
+    score: float = Field(ge=0, le=100)
+    bullish_pct: float = Field(ge=0, le=100)
+    neutral_pct: float = Field(ge=0, le=100)
+    bearish_pct: float = Field(ge=0, le=100)
+    last_updated_at: str | None = None
+    stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
+
+
+class RatingDistributionOut(BaseModel):
+    """DB-only heuristic rating mix proxy (non-AI)."""
+
+    buy_pct: float = Field(ge=0, le=100)
+    hold_pct: float = Field(ge=0, le=100)
+    sell_pct: float = Field(ge=0, le=100)
+    confidence: float = Field(ge=0, le=100, description="Heuristic confidence (data availability proxy)")
+    last_updated_at: str | None = None
+    stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    loading_state: Literal["ready", "warming", "placeholder", "stale"] = "ready"
+    message: str | None = None
+
+
 class Chart3DPoint(BaseModel):
-    """One day in the Narrative 3D view: time + relative trend index + coverage count."""
+    """One day in the Narrative 3D view: narrative keyword search index + coverage count."""
 
     date: str  # YYYY-MM-DD
-    search_trend: float = Field(ge=0, le=100, description="Relative interest index 0–100, not absolute volume")
-    coverage_volume: float = Field(ge=0, description="Matching news/doc count for that day (mock until indexed)")
+    keywords_search_volume: float = Field(
+        ge=0, description="Sum of independent narrative keyword Trends indices for that day (not target/ticker)."
+    )
+    coverage_volume: float = Field(ge=0, description="Matching news/doc count for that day")
 
 
 class Chart3DSourceStatus(BaseModel):
-    search_trend: str  # "mock" | "real"
-    coverage_volume: str  # "mock" | "real"
+    keywords_search_volume: str = "n/a"  # real | unavailable | n/a
+    coverage_volume: str = "n/a"
+    target_search_volume: str = "n/a"
 
 
 class EntityChart3DDataOut(BaseModel):
@@ -234,23 +292,43 @@ class EntityChart3DDataOut(BaseModel):
     source_status: Chart3DSourceStatus
     data_updated_at: str | None = None
     data_source: str = "snapshot"
+    message: str | None = None
 
 
-class SearchTrendPoint(BaseModel):
+class KeywordsSearchPoint(BaseModel):
     date: str
-    search_trend: float = Field(ge=0, le=100, description="Relative interest index 0–100, not absolute search volume")
+    keywords_search_volume: float = Field(ge=0, description="Narrative keyword Trends aggregate for that day")
 
 
-class EntitySearchTrendSeriesOut(BaseModel):
+class TargetSearchPoint(BaseModel):
+    date: str
+    target_search_volume: float = Field(ge=0, description="Primary instrument symbol Trends index for that day")
+
+
+class EntityKeywordsSearchSeriesOut(BaseModel):
     entity_id: str
     range: str
-    points: list[SearchTrendPoint]
-    data: list[SearchTrendPoint] | None = None
+    points: list[KeywordsSearchPoint]
+    data: list[KeywordsSearchPoint] | None = None
     last_updated_at: str | None = None
     stale: bool = False
     source_status: Chart3DSourceStatus
     data_updated_at: str | None = None
     data_source: str = "snapshot"
+    message: str | None = None
+
+
+class EntityTargetSearchSeriesOut(BaseModel):
+    entity_id: str
+    range: str
+    points: list[TargetSearchPoint]
+    data: list[TargetSearchPoint] | None = None
+    last_updated_at: str | None = None
+    stale: bool = False
+    source_status: Chart3DSourceStatus
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
+    message: str | None = None
 
 
 class EntityMetricPoint(BaseModel):
@@ -260,9 +338,21 @@ class EntityMetricPoint(BaseModel):
 
 class EntityMetricSeriesOut(BaseModel):
     entity_id: str
-    metric: str  # search_trend | coverage_volume | sentiment_score | momentum | acceleration
+    metric: str  # target_search_volume | keywords_search_volume | coverage_volume | sentiment_score | momentum_* | acceleration_*
     range: str
     points: list[EntityMetricPoint]
+
+
+class TripleSignalSeriesOut(BaseModel):
+    period: str
+    axis: list[str]
+    trading_activity: list[float | None]
+    news_volume: list[float | None]
+    search_volume: list[float | None]
+    last_updated_at: str | None = None
+    stale: bool = False
+    data_updated_at: str | None = None
+    data_source: str = "snapshot"
 
 
 class EntityNewsItemOut(BaseModel):

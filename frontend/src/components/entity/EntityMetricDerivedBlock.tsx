@@ -20,7 +20,11 @@ export function EntityMetricDerivedBlock({
 }: {
   entityId: string;
   period?: string;
-  metric: "momentum" | "acceleration";
+  metric:
+    | "momentum_target"
+    | "acceleration_target"
+    | "momentum_keywords"
+    | "acceleration_keywords";
 }) {
   const { t } = useI18n();
   const [points, setPoints] = useState<Array<{ t: string; value: number }>>([]);

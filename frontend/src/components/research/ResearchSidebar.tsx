@@ -27,6 +27,8 @@ export function ResearchSidebar({
   const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(false);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const [newFolderParentId, setNewFolderParentId] = useState<string | null>(null);
   const ROOT_FOLDER_SENTINEL = "__root__";
@@ -59,12 +61,15 @@ export function ResearchSidebar({
 
   const loadAll = useCallback(async () => {
     try {
-      const [fData, pData] = await Promise.all([
-        api.researchFolders(),
-        api.researchProjects(undefined),
-      ]);
+      setFoldersLoading(true);
+      setProjectsLoading(true);
+      const fData = await api.researchFolders();
       setFolders(fData);
+      setFoldersLoading(false);
+      // Projects can be slower; do not block folder render.
+      const pData = await api.researchProjects(undefined);
       setProjects(pData);
+      setProjectsLoading(false);
       setError(null);
     } catch (e: unknown) {
       console.error("Failed to load research data", e);
@@ -77,6 +82,8 @@ export function ResearchSidebar({
         /internal server error/i.test(parsed) ||
         /^request failed \(5\d\d\)$/i.test(parsed);
       setError(looksLikeServer ? `${t("research.loadTreeFailed")}\n\n${t("research.loadTreeFailedServer")}` : parsed);
+      setFoldersLoading(false);
+      setProjectsLoading(false);
     }
   }, [t]);
 
@@ -260,6 +267,16 @@ export function ResearchSidebar({
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{t("nav.research")}</span>
         <SectionHelp titleKey="help.researchSidebarTitle" bodyKey="help.researchSidebarBody" />
       </div>
+      {foldersLoading && folders.length === 0 ? (
+        <div className="rounded border border-slate-800 bg-slate-950/30 px-2 py-1.5 text-xs text-slate-400">
+          {t("common.loading")}
+        </div>
+      ) : null}
+      {!foldersLoading && projectsLoading && folders.length > 0 ? (
+        <div className="rounded border border-slate-800 bg-slate-950/30 px-2 py-1.5 text-xs text-slate-500">
+          Loading projects…
+        </div>
+      ) : null}
       {error ? (
         <div className="rounded border border-amber-900/50 bg-amber-950/20 px-2 py-1.5 text-xs text-amber-200 whitespace-pre-line break-words text-balance">
           {error}

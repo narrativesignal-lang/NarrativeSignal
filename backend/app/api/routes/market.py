@@ -173,54 +173,12 @@ def _indices_top_envelope(rows: list[dict]) -> tuple[str, str, str | None, bool]
 
 @router.get("/quote")
 def quote(symbol: str = Query(..., min_length=1, max_length=30), db: Session = Depends(get_db)) -> dict:
-    """Twelve Data when configured (Redis-cached); else snapshot / last-good Redis (data_source=fallback)."""
+    """Read-only quote response from local snapshot cache (no direct provider call in request path)."""
     raw_in = symbol
     sym = normalize_user_symbol(symbol)
     logger.info("symbol_normalized from=%s to=%s", raw_in, sym)
     quote_prov = route_quote_provider(symbol)
-    logger.info("provider_route kind=quote symbol=%s provider=%s", sym, quote_prov)
-    twelve_sym = map_symbol_for_twelve(sym) if quote_prov == "twelvedata" else None
-    td = None
-    if quote_prov == "twelvedata" and twelve_sym:
-        logger.info("symbol_mapped provider=twelve from=%s to=%s", sym, twelve_sym)
-        td = twelve_get_quote(twelve_sym)
-        if td and td.get("price") is not None:
-            logger.info("market_quote symbol=%s twelve=attempted result=hit", sym)
-        else:
-            logger.info("market_quote symbol=%s twelve=attempted result=miss fallback=1", sym)
-    else:
-        logger.info("symbol_unmapped from=%s fallback=direct", sym)
-        logger.info("market_quote symbol=%s twelve=skipped_unsupported fallback=direct", sym)
-    if td and td.get("price") is not None:
-        price = float(td["price"])
-        pct_raw = td.get("percent_change")
-        chg_raw = td.get("change")
-        pct = float(pct_raw) if pct_raw is not None else None
-        chg = float(chg_raw) if chg_raw is not None else None
-        ts = str(td.get("timestamp") or datetime.now(timezone.utc).isoformat())
-        payload = {
-            "symbol": sym,
-            "price": price,
-            "change_percent": pct,
-            "change": chg,
-            "timestamp": ts,
-        }
-        record_snapshot_hit("market_quote")
-        try:
-            from app.services.active_market_pool_service import record_active_pool_interaction
-
-            record_active_pool_interaction(db, sym)
-        except Exception:
-            logger.warning("active_pool record failed symbol=%s", sym, exc_info=True)
-        return {
-            "data": payload,
-            **payload,
-            "stale": False,
-            "last_updated_at": ts,
-            "data_updated_at": ts,
-            "data_source": "twelvedata",
-            "provider": "twelvedata",
-        }
+    logger.info("provider_route kind=quote symbol=%s provider=%s request_mode=snapshot_only", sym, quote_prov)
 
     snap = db.get(MarketQuoteSnapshot, sym)
     lg = load_last_good_quote(sym)
@@ -247,9 +205,10 @@ def quote(symbol: str = Query(..., min_length=1, max_length=30), db: Session = D
             "data": payload,
             "last_updated_at": None,
             "data_updated_at": None,
-            "data_source": "fallback",
-            "provider": "snapshot",
+            "data_source": "unavailable",
+            "provider": "unavailable",
             "stale": True,
+            "availability": "unavailable",
             **payload,
         }
 
@@ -262,14 +221,17 @@ def quote(symbol: str = Query(..., min_length=1, max_length=30), db: Session = D
 
     record_snapshot_hit("market_quote")
     payload = {"symbol": sym, "price": price, "change_percent": pct, "change": chg, "timestamp": lu}
+    provider_source = (snap.provider_source if snap else None) or "snapshot"
+    data_source = "stale_fallback" if st else "snapshot"
     return {
         "data": payload,
         **payload,
         "stale": st,
         "last_updated_at": lu,
         "data_updated_at": lu,
-        "data_source": "fallback",
-        "provider": "snapshot",
+        "data_source": data_source,
+        "provider": provider_source,
+        "availability": "delayed" if st else "ready",
     }
 
 
@@ -318,45 +280,23 @@ def time_series(
     sym = normalize_user_symbol(symbol)
     logger.info("symbol_normalized from=%s to=%s", raw_in, sym)
     ts_prov = route_time_series_provider(symbol)
-    logger.info("provider_route kind=time_series symbol=%s provider=%s", sym, ts_prov)
-    twelve_sym = map_symbol_for_twelve(sym) if ts_prov == "twelvedata" else None
+    logger.info("provider_route kind=time_series symbol=%s provider=%s request_mode=snapshot_only", sym, ts_prov)
     p = period.upper() if period else "1M"
     if interval and outputsize is not None:
         iv, osz = interval.strip(), int(outputsize)
     else:
         iv, osz = PERIOD_TO_TWELVE.get(p, ("1day", 100))
-    raw: list[dict] = []
-    if ts_prov == "twelvedata" and twelve_sym:
-        logger.info("symbol_mapped provider=twelve from=%s to=%s", sym, twelve_sym)
-        raw = twelve_get_time_series(twelve_sym, interval=iv, outputsize=osz)
-    else:
-        logger.info("symbol_unmapped from=%s fallback=direct", sym)
-        logger.info("market_time_series symbol=%s twelve=skipped_unsupported fallback=direct", sym)
     bars: list[dict] = []
-    data_source = "twelvedata"
-    if raw:
-        bars = [_iso_to_unix_bar(b) for b in raw if b.get("time")]
+    data_source = "snapshot"
     lu = datetime.now(timezone.utc).isoformat()
     stale = False
     snap = None
+    bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+    lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else lu
     if not bars:
-        if ts_prov == "twelvedata" and twelve_sym and not raw:
-            logger.info("market_time_series symbol=%s twelve=attempted result=miss fallback=1", sym)
-        elif ts_prov == "twelvedata" and twelve_sym and raw:
-            logger.info("market_time_series symbol=%s twelve=attempted result=miss bars_empty fallback=1", sym)
-        bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
-        data_source = "fallback"
-        lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else lu
-    else:
-        logger.info("market_time_series symbol=%s twelve=attempted result=hit", sym)
-        try:
-            from app.services.active_market_pool_service import record_active_pool_interaction
-
-            record_active_pool_interaction(db, sym)
-        except Exception:
-            logger.warning("active_pool record failed symbol=%s", sym, exc_info=True)
+        data_source = "unavailable"
     record_snapshot_hit("market_time_series")
-    prov = "twelvedata" if data_source == "twelvedata" else "snapshot"
+    prov = (snap.provider_source if snap else None) or ("unavailable" if data_source == "unavailable" else "snapshot")
     payload = {"symbol": sym, "period": p, "provider": prov, "bars": bars}
     return {
         "data": payload,
@@ -365,6 +305,7 @@ def time_series(
         "data_updated_at": lu,
         "data_source": data_source,
         "stale": stale,
+        "availability": "unavailable" if data_source == "unavailable" else ("delayed" if stale else "ready"),
     }
 
 
@@ -490,7 +431,21 @@ def get_indices(
             "stale": True,
         }
 
-    rows = read_snapshot_rows_for_indices(db, all_items)
+    try:
+        rows = read_snapshot_rows_for_indices(db, all_items)
+    except Exception:
+        logger.exception("market indices: snapshot read failed category=%s", category)
+        record_snapshot_hit("market_indices_error")
+        record_first_paint_envelope("market_indices", loading_state="placeholder", data_source="placeholder")
+        return {
+            "data": [],
+            "last_updated_at": None,
+            "data_updated_at": None,
+            "data_source": "placeholder",
+            "loading_state": "placeholder",
+            "message": "Index watchlist is temporarily unavailable (snapshot read failed).",
+            "stale": True,
+        }
     record_snapshot_hit("market_indices")
 
     last_updated_at = None
@@ -562,4 +517,36 @@ def add_index(
     except Exception:
         pass
     return {"id": str(mi.id), "category": mi.category, "name": mi.name, "symbol": mi.symbol, "asset_type": mi.asset_type}
+
+
+@router.delete("/indices", status_code=status.HTTP_200_OK)
+def delete_index(
+    category: str = Query(..., min_length=1, max_length=80),
+    symbol: str = Query(..., min_length=1, max_length=30),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Delete a user-added index row by (category, symbol).
+    Defaults are not stored per-user and cannot be deleted.
+    """
+    cat = category.strip()
+    sym = normalize_user_symbol(symbol)
+    row = db.scalar(
+        select(MacroIndex).where(
+            MacroIndex.user_id == current_user.id,
+            MacroIndex.category == cat,
+            MacroIndex.symbol == sym,
+        )
+    )
+    if not row:
+        # Idempotent delete: nothing to remove.
+        return {"ok": True, "deleted": False}
+    db.delete(row)
+    db.commit()
+    try:
+        _get_redis().delete(f"macro_indices_prices:{cat}")
+    except Exception:
+        pass
+    return {"ok": True, "deleted": True}
 

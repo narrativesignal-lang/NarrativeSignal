@@ -59,3 +59,5 @@ htmlcov/
 # Misc
 *.bak
 *.orig
+
+backend/.venv312/

@@ -11,6 +11,8 @@ import { useI18n } from "@/lib/i18n";
 import { useUser } from "@/lib/UserContext";
 import { STALE_MARKET_MS } from "@/lib/queryClient";
 import { CandleChart } from "@/components/CandleChart";
+import { ComparisonChart } from "@/components/ComparisonChart";
+import { BlockStateMessage } from "@/components/BlockStateMessage";
 import { normalizeOhlcvBars, type CandleBar } from "@/lib/ohlcvBars";
 import {
   ResizableChartSection,
@@ -24,8 +26,10 @@ import {
   addWorkspaceChart,
   buildChartLayoutPayload,
   MAX_WORKSPACE_CHARTS,
+  mergeOverlaySeriesIntoWorkspace,
   parseWorkspaceChartLayout,
   removeWorkspaceChart,
+  workspaceBlockAspectMode,
   type WorkspaceChartBlock,
   type WorkspaceChartType,
 } from "@/lib/entityWorkspaceCharts";
@@ -44,6 +48,7 @@ import { EntityRatingDistributionBlock } from "@/components/entity/EntityRatingD
 import { WorkspaceChartErrorBoundary } from "@/components/entity/WorkspaceChartErrorBoundary";
 import { SectionHelp } from "@/components/SectionHelp";
 import { EntityEventTimeline } from "@/components/entity/EntityEventTimeline";
+import { EntityAiChartInsightsPanel } from "@/components/entity/EntityAiChartInsightsPanel";
 import { EntityNewsPanel } from "@/components/entity/EntityNewsPanel";
 import { DEFAULT_ANALYSIS_PERIOD, isValidAnalysisPeriod } from "@/lib/analysisPeriods";
 import type { ChartVisibleTimeRange } from "@/lib/chartTimeUnix";
@@ -92,13 +97,6 @@ const PERIODS = ["1D", "5D", "1M", "6M", "1Y", "MAX"] as const;
 
 const MAX_ITEMS_PER_ENTITY = FREE_PLAN_LIMITS.MAX_ITEMS_PER_ENTITY;
 const MAX_COMPARISON = 4;
-/** Compare stack: up to this many rows high before only scrolling (not growing the section). */
-const MAX_COMPARE_VISIBLE_ROWS = 3;
-const COMPARE_ROW_CANDLE_HEIGHT = 220;
-/** Per-row chrome: card padding, symbol label, Events & news header + strip */
-const COMPARE_ROW_BLOCK_CHROME = 104;
-const COMPARE_ROW_GAP_PX = 12;
-const COMPARE_ROW_BLOCK_HEIGHT = COMPARE_ROW_CANDLE_HEIGHT + COMPARE_ROW_BLOCK_CHROME;
 const COMPARE_SECTION_MAX_HEIGHT = 1100;
 
 export default function EntityDetailPageClient({ entityId }: { entityId: string }) {
@@ -133,9 +131,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [instrumentResults, setInstrumentResults] = useState<PortfolioInstrumentSearchHit[]>([]);
   const [comparisonPeriod, setComparisonPeriod] = useState<(typeof PERIODS)[number]>("1M");
   const [comparisonInstrumentIds, setComparisonInstrumentIds] = useState<string[]>([]);
-  const [comparisonCandles, setComparisonCandles] = useState<Array<{ symbol: string; bars: CandleBar[] }>>([]);
-  const [comparisonLoading, setComparisonLoading] = useState(false);
-  const [compareAllowFetch, setCompareAllowFetch] = useState(false);
+  const [comparePending, setComparePending] = useState(false);
   const [removeItemConfirm, setRemoveItemConfirm] = useState<{
     relatedId: string;
     instrumentId: string;
@@ -151,9 +147,6 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
   const [priceSectionHeight, setPriceSectionHeight] = useState(RESIZE_DEFAULT_HEIGHT);
   const [compareSectionHeight, setCompareSectionHeight] = useState(RESIZE_DEFAULT_HEIGHT);
   const [mainChartVisibleRange, setMainChartVisibleRange] = useState<ChartVisibleTimeRange | null>(null);
-  const [compareChartVisibleRange, setCompareChartVisibleRange] = useState<
-    Record<string, ChartVisibleTimeRange | null>
-  >({});
   const [removeWorkspaceChartId, setRemoveWorkspaceChartId] = useState<string | null>(null);
   const layoutRestoredRef = useRef(false);
   const skipNextChartPersistRef = useRef(false);
@@ -196,7 +189,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     (!!entity &&
       (newsPending ||
         (!!entity.instrument?.symbol && ohlcvQuery.isPending && !ohlcvQuery.data) ||
-        (compareAllowFetch && comparisonLoading)));
+        comparePending));
   const showPageSlowBanner = useSlowLoadVisible(pageSlowPending);
 
   const recalcNewsHeight = useCallback(() => {
@@ -263,8 +256,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     layoutRestoredRef.current = false;
     skipNextChartPersistRef.current = true;
     setTrendingData(null);
-    setComparisonCandles([]);
-    setComparisonLoading(false);
+    setComparePending(false);
 
     let cancelled = false;
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -324,10 +316,6 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     setMainChartVisibleRange(null);
   }, [period, entity?.instrument?.symbol]);
 
-  useEffect(() => {
-    setCompareChartVisibleRange({});
-  }, [comparisonPeriod, comparisonInstrumentIds.join(",")]);
-
   const loadRelatedInstruments = useCallback(async () => {
     if (!id) return;
     try {
@@ -342,31 +330,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     loadRelatedInstruments();
   }, [loadRelatedInstruments]);
 
-  useEffect(() => {
-    if (!entity?.id) {
-      setCompareAllowFetch(false);
-      return;
-    }
-    setCompareAllowFetch(false);
-    let cancelled = false;
-    const handle = () => {
-      if (!cancelled) setCompareAllowFetch(true);
-    };
-    let idleId = 0;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      idleId = window.requestIdleCallback(handle, { timeout: 2000 });
-    } else {
-      timeoutId = setTimeout(handle, 600);
-    }
-    return () => {
-      cancelled = true;
-      if (typeof window !== "undefined" && "cancelIdleCallback" in window && idleId) {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-    };
-  }, [entity?.id]);
+  // Compare series now uses snapshot-only API + react-query; no idle-gate needed.
 
   useEffect(() => {
     if (entity?.instrument?.id && comparisonInstrumentIds.length === 0) {
@@ -554,57 +518,49 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
     return out;
   }, [entity?.instrument, relatedInstruments, t]);
 
-  const loadComparisonOhlcv = useCallback(async () => {
+  const [comparisonNoData, setComparisonNoData] = useState<string[]>([]);
+
+  const comparisonIdsJoined = useMemo(
+    () => comparisonInstrumentIds.slice(0, MAX_COMPARISON).join(","),
+    [comparisonInstrumentIds]
+  );
+  const comparisonSeriesQ = useQuery({
+    queryKey: ["entity", "comparisonSeries", id, comparisonPeriod, comparisonIdsJoined],
+    queryFn: async () => {
+      setComparePending(true);
+      try {
+        const res = await api.getEntityComparisonSeries(id, comparisonIdsJoined, comparisonPeriod);
+        return res;
+      } finally {
+        setComparePending(false);
+      }
+    },
+    enabled: Boolean(id) && comparisonInstrumentIds.length > 0,
+    staleTime: STALE_MARKET_MS,
+    placeholderData: (previous) => previous,
+  });
+
+  const comparisonSeries = comparisonSeriesQ.data?.series ?? [];
+  const comparisonChartSeries = useMemo(() => {
+    return comparisonSeries.map((line) => ({
+      symbol: line.symbol,
+      points: (line.points || []).map((p) => ({ t: p.t, value: p.value })),
+    }));
+  }, [comparisonSeries]);
+
+  useEffect(() => {
     if (comparisonInstrumentIds.length === 0) {
-      setComparisonCandles([]);
-      setComparisonLoading(false);
+      setComparisonNoData([]);
       return;
     }
-    setComparisonLoading(true);
-    try {
-      const idToSymbol = new Map(allComparisonOptions.map((o) => [o.instrumentId, o.symbol]));
-      const symbols = comparisonInstrumentIds
-        .map((iid) => idToSymbol.get(iid))
-        .filter((s): s is string => Boolean(s));
-      const results = await Promise.all(
-        symbols.map(async (symbol) => {
-          try {
-            const res = await api.marketTimeSeries(symbol, comparisonPeriod);
-            return { symbol, bars: normalizeOhlcvBars(res?.bars ?? []) };
-          } catch {
-            return { symbol, bars: [] as CandleBar[] };
-          }
-        })
-      );
-      setComparisonCandles(results);
-    } catch {
-      setComparisonCandles([]);
-    } finally {
-      setComparisonLoading(false);
-    }
-  }, [comparisonInstrumentIds, comparisonPeriod, allComparisonOptions]);
-
-  useEffect(() => {
-    if (!compareAllowFetch) return;
-    void loadComparisonOhlcv();
-  }, [compareAllowFetch, comparisonInstrumentIds.join(","), comparisonPeriod, loadComparisonOhlcv]);
-
-  /** Grow compare panel height with 1→3 symbols; cap at three row-heights so a 4th uses the scrollbar. */
-  useEffect(() => {
-    const n = comparisonInstrumentIds.length;
-    if (n === 0) {
-      setCompareSectionHeight(RESIZE_DEFAULT_HEIGHT);
-      return;
-    }
-    const capped = Math.min(n, MAX_COMPARE_VISIBLE_ROWS);
-    const inner =
-      capped * COMPARE_ROW_BLOCK_HEIGHT + (capped > 1 ? (capped - 1) * COMPARE_ROW_GAP_PX : 0);
-    const next = Math.min(
-      COMPARE_SECTION_MAX_HEIGHT,
-      Math.max(RESIZE_MIN_HEIGHT, inner + RESIZE_HANDLE_HEIGHT + 4)
-    );
-    setCompareSectionHeight(next);
-  }, [comparisonInstrumentIds.join(",")]);
+    const wantSyms = new Map(allComparisonOptions.map((o) => [o.instrumentId, o.symbol.toUpperCase()]));
+    const wanted = comparisonInstrumentIds
+      .slice(0, MAX_COMPARISON)
+      .map((iid) => wantSyms.get(iid))
+      .filter((s): s is string => Boolean(s));
+    const have = new Set(comparisonSeries.map((s) => s.symbol.toUpperCase()));
+    setComparisonNoData(wanted.filter((s) => !have.has(s)));
+  }, [comparisonInstrumentIds, comparisonSeries, allComparisonOptions]);
 
   const toggleComparisonInstrument = useCallback((instrumentId: string) => {
     setComparisonInstrumentIds((prev) => {
@@ -670,7 +626,19 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
       }
       return next;
     });
-    setAddChartModalOpen(false);
+  }, []);
+
+  const pickWorkspaceOverlayKeys = useCallback((keys: string[]) => {
+    setWorkspaceCharts((prev) => {
+      const merged = mergeOverlaySeriesIntoWorkspace(prev, keys);
+      if (!merged) return prev;
+      const prevIds = new Set(prev.map((b) => b.id));
+      const newBlock = merged.find((b) => !prevIds.has(b.id));
+      if (newBlock) {
+        setWorkspaceBlockHeights((h) => ({ ...h, [newBlock.id]: RESIZE_DEFAULT_HEIGHT }));
+      }
+      return merged;
+    });
   }, []);
 
   const confirmRemoveWorkspaceChart = useCallback(() => {
@@ -935,6 +903,17 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               )}
             </ResizableChartSection>
             {entity.instrument?.symbol ? (
+              <EntityAiChartInsightsPanel
+                entityId={id}
+                symbol={entity.instrument.symbol}
+                period={period}
+                visibleTimeRange={mainChartVisibleRange}
+                bars={ohlcv?.bars ?? []}
+                isAdminUser={isAdminUser}
+                userLoading={userLoading}
+              />
+            ) : null}
+            {entity.instrument?.symbol ? (
               <EntityEventTimeline
                 entityId={id}
                 symbol={entity.instrument.symbol}
@@ -1025,6 +1004,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                   type="button"
                   onClick={() => setComparisonPeriod(p)}
                   className={`rounded px-2 py-1 text-xs ${comparisonPeriod === p ? "bg-slate-700 text-slate-100" : "text-slate-400 hover:bg-slate-800"}`}
+                disabled={comparisonSeriesQ.isFetching}
                 >
                   {p}
                 </button>
@@ -1032,6 +1012,12 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
             </div>
           </div>
           <p className="mt-1 text-xs text-slate-400">{t("entity.compareInstrumentsHint", { max: MAX_COMPARISON })}</p>
+          {comparisonNoData.length > 0 ? (
+            <div className="mt-2 rounded border border-amber-900/40 bg-amber-950/20 px-2 py-1.5 text-[11px] text-amber-200">
+              No cached price history yet for: <span className="font-mono">{comparisonNoData.join(", ")}</span>. This panel only reads DB snapshots.
+              After adding related instruments, wait for background refresh (or use Admin → Refresh Cache).
+            </div>
+          ) : null}
           <div className="mt-2 flex flex-wrap gap-2">
             {allComparisonOptions.map((opt) => (
               <label key={opt.instrumentId} className="flex items-center gap-1.5 text-sm text-slate-300">
@@ -1040,6 +1026,7 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                   checked={comparisonInstrumentIds.includes(opt.instrumentId)}
                   onChange={() => toggleComparisonInstrument(opt.instrumentId)}
                   disabled={
+                    comparisonSeriesQ.isFetching ||
                     !comparisonInstrumentIds.includes(opt.instrumentId) && comparisonInstrumentIds.length >= MAX_COMPARISON
                   }
                 />
@@ -1055,65 +1042,24 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
               maxHeight={COMPARE_SECTION_MAX_HEIGHT}
             >
               {comparisonInstrumentIds.length === 0 ? (
-                <div className="flex h-full min-h-[120px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500">
-                  {t("entity.compareSelectHint")}
-                </div>
-              ) : comparisonLoading ? (
-                <div className="flex h-full min-h-[200px] items-center justify-center rounded bg-slate-900/50 text-sm text-slate-500">
-                  {t("common.loading")}
-                </div>
-              ) : comparisonCandles.length > 0 && comparisonCandles.every((c) => !c.bars.length) ? (
+                <BlockStateMessage kind="no_data" height={120} reason="select up to 4 instruments to compare" />
+              ) : comparisonSeriesQ.isFetching && !comparisonSeriesQ.data ? (
+                <BlockStateMessage kind="loading" height={200} />
+              ) : comparisonSeriesQ.isError ? (
                 <div className="flex h-full min-h-[160px] items-center justify-center rounded bg-slate-900/50 px-3 text-center text-sm text-slate-500">
-                  {t("entity.stackedCandlesNoData")}
+                  {parseApiError(comparisonSeriesQ.error)}
                 </div>
+              ) : comparisonChartSeries.length > 0 && comparisonChartSeries.every((c) => !c.points.length) ? (
+                <BlockStateMessage kind="no_data" height={160} reason="no cached price history / worker not run" />
               ) : (
-                (() => {
-                  const idToSymbol = new Map(allComparisonOptions.map((o) => [o.instrumentId, o.symbol]));
-                  return (
-                    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-0.5">
-                      {comparisonInstrumentIds.map((iid) => {
-                        const sym = idToSymbol.get(iid);
-                        if (!sym) return null;
-                        const c = comparisonCandles.find((x) => x.symbol === sym);
-                        const bars = c?.bars ?? [];
-                        return (
-                          <div
-                            key={iid}
-                            className="flex shrink-0 flex-col rounded border border-slate-700/60 bg-slate-900/30 p-2"
-                          >
-                            <div className="mb-1 text-xs font-medium text-slate-400">{sym}</div>
-                            {bars.length > 0 ? (
-                              <CandleChart
-                                bars={bars}
-                                height={COMPARE_ROW_CANDLE_HEIGHT}
-                                onVisibleTimeRangeChange={(r) =>
-                                  setCompareChartVisibleRange((prev) => ({ ...prev, [sym]: r }))
-                                }
-                              />
-                            ) : (
-                              <div
-                                className="flex items-center justify-center rounded bg-slate-900/20 px-2 text-center text-xs text-slate-500"
-                                style={{ minHeight: COMPARE_ROW_CANDLE_HEIGHT }}
-                              >
-                                {sym}: {t("common.noData")}
-                              </div>
-                            )}
-                            <EntityEventTimeline
-                              entityId={id}
-                              symbol={sym}
-                              period={comparisonPeriod}
-                              chartScope={`compare:${sym}`}
-                              bars={bars}
-                              visibleTimeRange={
-                                sym in compareChartVisibleRange ? compareChartVisibleRange[sym] ?? null : null
-                              }
-                            />
-                          </div>
-                        );
-                      })}
+                <div className="h-full min-h-0">
+                  <ComparisonChart series={comparisonChartSeries} height={Math.max(220, compareSectionHeight - 12)} />
+                  {comparisonSeriesQ.isFetching ? (
+                    <div className="mt-2">
+                      <div className="text-[11px] text-slate-500">Loading data...</div>
                     </div>
-                  );
-                })()
+                  ) : null}
+                </div>
               )}
             </ResizableChartSection>
           </div>
@@ -1191,52 +1137,69 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
                   {t("workspace.noBlocksYet", { max: MAX_WORKSPACE_CHARTS })}
                 </div>
               ) : (
-                workspaceCharts.map((block) => (
-                  <EntityWorkspaceChartCard
-                    key={block.id}
-                    block={block}
-                    onRemove={() => setRemoveWorkspaceChartId(block.id)}
-                  >
-                    <ResizableChartSection
-                      height={workspaceBlockHeights[block.id] ?? RESIZE_DEFAULT_HEIGHT}
-                      onHeightChange={(h) => setWorkspaceBlockHeights((prev) => ({ ...prev, [block.id]: h }))}
-                      minHeight={RESIZE_MIN_HEIGHT}
-                      maxHeight={RESIZE_MAX_HEIGHT}
+                workspaceCharts.map((block) => {
+                  const chartBody =
+                    block.type === "3d" || block.type === "analysis_3d" ? (
+                      <WorkspaceChartErrorBoundary>
+                        <EntityWorkspace3DChart entityId={id} />
+                      </WorkspaceChartErrorBoundary>
+                    ) : block.type === "quadrant" ? (
+                      <EntityQuadrantBlock entityId={id} period={period} />
+                    ) : block.type === "series_target_search_volume" ? (
+                      <EntitySeriesVolumeBlock entityId={id} period={period} kind="target_search" />
+                    ) : block.type === "series_keywords_search_volume" ? (
+                      <EntitySeriesVolumeBlock entityId={id} period={period} kind="keywords_search" />
+                    ) : block.type === "series_coverage_volume" ? (
+                      <EntitySeriesVolumeBlock entityId={id} period={period} kind="coverage" />
+                    ) : block.type === "series_triple_signal" ? (
+                      <TripleSignalChartBlock entityId={id} period={period} />
+                    ) : block.type === "metric_momentum_target" ? (
+                      <EntityMetricDerivedBlock entityId={id} period={period} metric="momentum_target" />
+                    ) : block.type === "metric_acceleration_target" ? (
+                      <EntityMetricDerivedBlock entityId={id} period={period} metric="acceleration_target" />
+                    ) : block.type === "metric_momentum_keywords" ? (
+                      <EntityMetricDerivedBlock entityId={id} period={period} metric="momentum_keywords" />
+                    ) : block.type === "metric_acceleration_keywords" ? (
+                      <EntityMetricDerivedBlock entityId={id} period={period} metric="acceleration_keywords" />
+                    ) : block.type === "overlay_technical" ? (
+                      <EntityOverlayChart entityId={id} period={period} overlaySeries={block.overlaySeries} />
+                    ) : block.type === "overlay_sentiment" ? (
+                      <EntityOverlaySentimentChart entityId={id} period={period} />
+                    ) : block.type === "split_technical" ? (
+                      <EntitySplitChart entityId={id} period={period} />
+                    ) : block.type === "split_sentiment" ? (
+                      <EntitySplitSentimentChart entityId={id} period={period} />
+                    ) : block.type === "analysis_institution_bias" ? (
+                      <EntityInstitutionBiasBlock entityId={id} />
+                    ) : block.type === "analysis_rating_distribution" ? (
+                      <EntityRatingDistributionBlock entityId={id} />
+                    ) : (
+                      <EntityWorkspaceChartPlaceholder block={block} />
+                    );
+                  const square = workspaceBlockAspectMode(block.type) === "square";
+                  return (
+                    <EntityWorkspaceChartCard
+                      key={block.id}
+                      block={block}
+                      onRemove={() => setRemoveWorkspaceChartId(block.id)}
                     >
-                      {block.type === "3d" || block.type === "analysis_3d" ? (
-                        <WorkspaceChartErrorBoundary>
-                          <EntityWorkspace3DChart entityId={id} />
-                        </WorkspaceChartErrorBoundary>
-                      ) : block.type === "quadrant" ? (
-                        <EntityQuadrantBlock entityId={id} period={period} />
-                      ) : block.type === "series_search_volume" ? (
-                        <EntitySeriesVolumeBlock entityId={id} period={period} kind="search" />
-                      ) : block.type === "series_coverage_volume" ? (
-                        <EntitySeriesVolumeBlock entityId={id} period={period} kind="coverage" />
-                      ) : block.type === "series_triple_signal" ? (
-                        <TripleSignalChartBlock entityId={id} period={period} />
-                      ) : block.type === "metric_momentum" ? (
-                        <EntityMetricDerivedBlock entityId={id} period={period} metric="momentum" />
-                      ) : block.type === "metric_acceleration" ? (
-                        <EntityMetricDerivedBlock entityId={id} period={period} metric="acceleration" />
-                      ) : block.type === "overlay_technical" ? (
-                        <EntityOverlayChart entityId={id} period={period} />
-                      ) : block.type === "overlay_sentiment" ? (
-                        <EntityOverlaySentimentChart entityId={id} period={period} />
-                      ) : block.type === "split_technical" ? (
-                        <EntitySplitChart entityId={id} period={period} />
-                      ) : block.type === "split_sentiment" ? (
-                        <EntitySplitSentimentChart entityId={id} period={period} />
-                      ) : block.type === "analysis_institution_bias" ? (
-                        <EntityInstitutionBiasBlock entityId={id} />
-                      ) : block.type === "analysis_rating_distribution" ? (
-                        <EntityRatingDistributionBlock entityId={id} />
-                      ) : (
-                        <EntityWorkspaceChartPlaceholder block={block} />
-                      )}
-                    </ResizableChartSection>
-                  </EntityWorkspaceChartCard>
-                ))
+                      <ResizableChartSection
+                        height={workspaceBlockHeights[block.id] ?? RESIZE_DEFAULT_HEIGHT}
+                        onHeightChange={(h) => setWorkspaceBlockHeights((prev) => ({ ...prev, [block.id]: h }))}
+                        minHeight={RESIZE_MIN_HEIGHT}
+                        maxHeight={RESIZE_MAX_HEIGHT}
+                      >
+                        {square ? (
+                          <div className="mx-auto w-full max-w-[min(100%,720px)] aspect-square min-h-[280px] shrink-0 overflow-hidden">
+                            {chartBody}
+                          </div>
+                        ) : (
+                          chartBody
+                        )}
+                      </ResizableChartSection>
+                    </EntityWorkspaceChartCard>
+                  );
+                })
               )}
             </div>
           </section>
@@ -1252,7 +1215,9 @@ export default function EntityDetailPageClient({ entityId }: { entityId: string 
         <EntityAddBlockModal
           open={addChartModalOpen}
           onClose={() => setAddChartModalOpen(false)}
-          onPick={pickWorkspaceBlockType}
+          onPickBlockType={pickWorkspaceBlockType}
+          onPickOverlayKeys={pickWorkspaceOverlayKeys}
+          workspaceBlocks={workspaceCharts}
           currentCount={workspaceCharts.length}
           saving={chartSavePending}
           error={chartPersistError}

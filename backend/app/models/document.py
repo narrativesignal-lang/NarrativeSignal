@@ -18,7 +18,9 @@ class SourceDocument(Base):
     __tablename__ = "source_documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
 
     source: Mapped[str] = mapped_column(String(40), nullable=False)  # e.g. "rss", "gov_rss", "reddit"
     source_id: Mapped[str] = mapped_column(String(255), nullable=False)  # stable unique id per source

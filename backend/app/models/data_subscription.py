@@ -50,6 +50,7 @@ class MarketQuoteSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String(64), primary_key=True)
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    provider_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -66,6 +67,7 @@ class OhlcvSnapshot(Base):
     symbol: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     period: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     bars: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provider_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -74,7 +76,7 @@ class OhlcvSnapshot(Base):
 
 
 class EntityDailyMetric(Base):
-    """Per-entity daily metrics (search_trend 0–100, coverage_volume). Never null-out on failed refresh."""
+    """Per-entity daily metrics: target vs narrative Google Trends (0–100 each), coverage, sentiment."""
 
     __tablename__ = "entity_daily_metrics"
 
@@ -83,10 +85,15 @@ class EntityDailyMetric(Base):
         UUID(as_uuid=True), ForeignKey("portfolio_entities.id", ondelete="CASCADE"), index=True, nullable=False
     )
     metric_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # Legacy mixed column — no longer written by sync; use target/keywords columns.
     search_trend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_search_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    keywords_search_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
     coverage_volume: Mapped[float | None] = mapped_column(Float, nullable=True)
     sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    search_trend_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # mock | google_trends | real
+    search_trend_source: Mapped[str | None] = mapped_column(String(20), nullable=True)  # legacy
+    target_search_volume_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    keywords_search_volume_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     coverage_volume_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -96,6 +103,24 @@ class EntityDailyMetric(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (UniqueConstraint("entity_id", "metric_date", name="uq_entity_daily_metric_day"),)
+
+
+class EntityTripleSignalDaily(Base):
+    """Precomputed non-AI triple signals (normalized 0-100) per entity/day."""
+
+    __tablename__ = "entity_triple_signal_daily"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("portfolio_entities.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    metric_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    trading_activity: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    news_volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    search_volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("entity_id", "metric_date", name="uq_entity_triple_signal_day"),)
 
 
 class NormalizedNewsDocument(Base):
