@@ -66,17 +66,52 @@ function applyYBand(v: number | null, yMin: number, yMax: number): number | null
   return clamp01((v - yMin) / band);
 }
 
-function computeVisibleSlice(
-  sortedAxis: string[],
-  range: OverlayLocalRange
-): { visibleAxis: string[]; startIdx: number } {
-  if (sortedAxis.length === 0) return { visibleAxis: [], startIdx: 0 };
-  const visibleAxis = filterSortedAxisByOverlayRange(sortedAxis, range);
-  if (visibleAxis.length === 0) return { visibleAxis: [], startIdx: sortedAxis.length };
-  const firstK = visibleAxis[0]!.trim().slice(0, 10);
-  const startIdx = sortedAxis.findIndex((k) => k.trim().slice(0, 10) === firstK);
-  return { visibleAxis, startIdx: startIdx === -1 ? 0 : startIdx };
+function dayKeyAt(s: string): string {
+  return s.trim().slice(0, 10);
 }
+
+/** Map each visible day to raw value by calendar key (same length as `visibleAxis`). */
+function alignRawToVisibleAxis(
+  fullAxis: string[],
+  visibleAxis: string[],
+  raw: (number | null)[]
+): (number | null)[] {
+  const idxByKey = new Map<string, number>();
+  for (let i = 0; i < fullAxis.length; i++) {
+    idxByKey.set(dayKeyAt(fullAxis[i]!), i);
+  }
+  return visibleAxis.map((vk) => {
+    const j = idxByKey.get(dayKeyAt(vk));
+    if (j === undefined) return null;
+    const v = raw[j];
+    return v == null || !Number.isFinite(v as number) ? null : v;
+  });
+}
+
+function visibleDayUtcMs(key: string): number {
+  return new Date(`${dayKeyAt(key)}T12:00:00.000Z`).getTime();
+}
+
+/** X position from calendar time so domain matches [first, last] visible date. */
+function xForVisibleIndex(visibleAxis: string[], i: number, paddingLeft: number, innerW: number): number {
+  const n = visibleAxis.length;
+  if (n < 1) return paddingLeft;
+  if (n === 1) return paddingLeft + innerW / 2;
+  const t0 = visibleDayUtcMs(visibleAxis[0]!);
+  const tLast = visibleDayUtcMs(visibleAxis[n - 1]!);
+  const span = Math.max(tLast - t0, 1);
+  const ti = visibleDayUtcMs(visibleAxis[i]!);
+  return paddingLeft + ((ti - t0) / span) * innerW;
+}
+
+function computeVisibleSlice(sortedAxis: string[], range: OverlayLocalRange): { visibleAxis: string[] } {
+  if (sortedAxis.length === 0) return { visibleAxis: [] };
+  const visibleAxis = filterSortedAxisByOverlayRange(sortedAxis, range);
+  return { visibleAxis };
+}
+
+/** Deterministic vertical stagger in px so normalized overlays stay readable (comparison semantics unchanged). */
+const OVERLAY_LANE_PX = 7;
 
 export function EntityMathOverlayChart({
   entityId,
@@ -280,10 +315,7 @@ export function EntityMathOverlayChart({
     void load();
   }, [load]);
 
-  const { visibleAxis, startIdx } = useMemo(
-    () => computeVisibleSlice(fullAxis, localRange),
-    [fullAxis, localRange]
-  );
+  const { visibleAxis } = useMemo(() => computeVisibleSlice(fullAxis, localRange), [fullAxis, localRange]);
 
   const plotData = useMemo(() => {
     if (!fullAxis.length || !visibleAxis.length || !rawLines.length) {
@@ -298,7 +330,7 @@ export function EntityMathOverlayChart({
     }> = [];
 
     for (const ln of rawLines) {
-      const sliceRaw = ln.raw.slice(startIdx);
+      const sliceRaw = alignRawToVisibleAxis(fullAxis, visibleAxis, ln.raw);
       const norm = normalizeMinMax(sliceRaw);
       const y = norm.map((v) => applyYBand(v, yBandMin, yBandMax));
       const nonNull = sliceRaw.filter((v) => v != null && Number.isFinite(v as number)).length;
@@ -312,7 +344,7 @@ export function EntityMathOverlayChart({
       });
     }
     return { lines: linesOut };
-  }, [fullAxis.length, visibleAxis, rawLines, startIdx, yBandMin, yBandMax]);
+  }, [fullAxis, visibleAxis, rawLines, yBandMin, yBandMax]);
 
   const padding = { top: 12, right: 12, bottom: 30, left: 44 };
   const plotW = 640;
@@ -322,39 +354,46 @@ export function EntityMathOverlayChart({
   const paths = useMemo(() => {
     const axis = visibleAxis;
     const n = axis.length;
-    const lines = plotData.lines.filter((l) => !hiddenIds.has(l.id));
+    const allLines = plotData.lines;
     if (n < 1) return [];
-    const xAt = (i: number) =>
-      n <= 1 ? padding.left + innerW / 2 : padding.left + (i / Math.max(1, n - 1)) * innerW;
-    return lines.map((ln) => {
-      const pts: Array<{ x: number; y: number }> = [];
-      for (let i = 0; i < n; i++) {
-        const yy = ln.y[i];
-        if (yy == null) continue;
-        pts.push({ x: xAt(i), y: padding.top + innerH - yy * innerH });
-      }
-      if (pts.length === 1) {
-        return {
-          id: ln.id,
-          d: "",
-          dot: pts[0]!,
-          color: ln.color,
-          label: ln.label,
-        };
-      }
-      if (pts.length < 2)
-        return {
-          id: ln.id,
-          d: "",
-          dot: null as { x: number; y: number } | null,
-          color: ln.color,
-          label: ln.label,
-        };
-      const d = pts
-        .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-        .join(" ");
-      return { id: ln.id, d, dot: null as { x: number; y: number } | null, color: ln.color, label: ln.label };
-    });
+    const laneCount = Math.max(1, allLines.length);
+    const laneMid = (laneCount - 1) / 2;
+
+    return allLines
+      .map((ln, lineIndex) => {
+        if (hiddenIds.has(ln.id)) return null;
+        const laneOffset = (lineIndex - laneMid) * OVERLAY_LANE_PX;
+        const pts: Array<{ x: number; y: number }> = [];
+        for (let i = 0; i < n; i++) {
+          const yy = ln.y[i];
+          if (yy == null) continue;
+          const x = xForVisibleIndex(axis, i, padding.left, innerW);
+          const yBase = padding.top + innerH - yy * innerH;
+          pts.push({ x, y: yBase + laneOffset });
+        }
+        if (pts.length === 1) {
+          return {
+            id: ln.id,
+            d: "",
+            dot: pts[0]!,
+            color: ln.color,
+            label: ln.label,
+          };
+        }
+        if (pts.length < 2)
+          return {
+            id: ln.id,
+            d: "",
+            dot: null as { x: number; y: number } | null,
+            color: ln.color,
+            label: ln.label,
+          };
+        const d = pts
+          .map((p, j) => `${j === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+          .join(" ");
+        return { id: ln.id, d, dot: null as { x: number; y: number } | null, color: ln.color, label: ln.label };
+      })
+      .filter((p): p is NonNullable<typeof p> => p != null);
   }, [visibleAxis, plotData.lines, hiddenIds, innerH, innerW, padding.left, padding.top]);
 
   const resetView = useCallback(() => {
