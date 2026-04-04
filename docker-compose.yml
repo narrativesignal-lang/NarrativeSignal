@@ -76,9 +76,10 @@ services:
       - backend
     ports:
       - "127.0.0.1:3000:3000"
-    # `pnpm run dev` runs clean first (see frontend/package.json).
+
+  # `pnpm run dev` runs clean first (see frontend/package.json).
     # Named volume for `.next` so host bind-mount never leaves stale webpack chunks in the container.
-    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run dev"]
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm build && pnpm start"]
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -87,4 +88,5 @@ services:
 volumes:
   pgdata:
   frontend_next:
+
 
