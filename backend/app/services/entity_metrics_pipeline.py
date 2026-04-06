@@ -436,7 +436,22 @@ def sync_entity_search_trend(
 
     target_by_date: dict[date, float] = {}
     if target_kw:
-        for p in get_daily_interest_single_keyword(target_kw, tf):
+        fallback_target_name = ""
+        try:
+            if getattr(entity, "instrument", None) is not None:
+                fallback_target_name = (
+                    str(getattr(entity.instrument, "display_name", "") or "")
+                    or str(getattr(entity.instrument, "name", "") or "")
+                ).strip()
+            if not fallback_target_name:
+                fallback_target_name = (str(getattr(entity, "name", "") or "")).strip()
+        except Exception:
+            fallback_target_name = ""
+        for p in get_daily_interest_single_keyword(
+            target_kw,
+            tf,
+            fallback_keyword=fallback_target_name or None,
+        ):
             try:
                 d = date.fromisoformat(str(p["date"]))
                 target_by_date[d] = float(p["value"])

@@ -38,12 +38,12 @@ celery_app.conf.update(
         },
         "refresh-market-quotes-every-20-min": {
             "task": "app.worker.tasks.refresh_market_quotes",
-            "schedule": crontab(minute="*/20"),
+            "schedule": crontab(minute="1,21,41"),
         },
         # Twelve fixed warm pool: Redis + DB snapshots for validated symbols only (conservative credits).
         "warm-pool-twelve-quotes-15m": {
             "task": "app.worker.tasks.warm_pool_twelve_quotes",
-            "schedule": crontab(minute="*/15"),
+            "schedule": crontab(minute="4,19,34,49"),
         },
         "warm-pool-twelve-time-series-1m-hourly": {
             "task": "app.worker.tasks.warm_pool_twelve_time_series_1m",
@@ -52,7 +52,7 @@ celery_app.conf.update(
         # Twelve dynamic active pool (global): separate from fixed warm pool list + schedules.
         "active-pool-twelve-quotes-15m": {
             "task": "app.worker.tasks.refresh_active_pool_twelve_quotes",
-            "schedule": crontab(minute="*/15"),
+            "schedule": crontab(minute="9,24,39,54"),
         },
         "active-pool-twelve-time-series-1m-2h": {
             "task": "app.worker.tasks.refresh_active_pool_twelve_time_series_1m",

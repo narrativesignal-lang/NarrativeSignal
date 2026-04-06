@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Any
 
@@ -26,7 +27,44 @@ def _sleep_rate_limit() -> None:
     time.sleep(settings.trends_request_sleep_seconds + random.uniform(0, 0.5))
 
 
-def get_daily_interest_single_keyword(keyword: str, timeframe: str) -> list[dict[str, Any]]:
+def _is_ticker_like(keyword: str) -> bool:
+    s = (keyword or "").strip()
+    if not s or " " in s:
+        return False
+    return bool(re.fullmatch(r"[A-Z0-9.\-]{1,8}", s))
+
+
+def _candidate_keywords(keyword: str, fallback_keyword: str | None = None) -> list[str]:
+    base = (keyword or "").strip()
+    if not base:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _push(v: str | None) -> None:
+        x = (v or "").strip()
+        if not x:
+            return
+        lk = x.lower()
+        if lk in seen:
+            return
+        seen.add(lk)
+        out.append(x)
+
+    _push(base)
+    # Ticker-only terms are often unstable in pytrends; "TICKER stock" is typically safer.
+    if _is_ticker_like(base.upper()):
+        _push(f"{base} stock")
+    _push(fallback_keyword)
+    return out
+
+
+def get_daily_interest_single_keyword(
+    keyword: str,
+    timeframe: str,
+    *,
+    fallback_keyword: str | None = None,
+) -> list[dict[str, Any]]:
     """
     One Google Trends request per keyword (no multi-keyword batch used as combined series).
     Returns [{"date": "YYYY-MM-DD", "value": float 0–100}, ...]. Never raises.
@@ -34,11 +72,12 @@ def get_daily_interest_single_keyword(keyword: str, timeframe: str) -> list[dict
     cleaned = (keyword or "").strip()
     if not cleaned:
         return []
+    candidates = _candidate_keywords(cleaned, fallback_keyword=fallback_keyword)
+    if not candidates:
+        return []
 
     try:
         tf = normalize_trends_timeframe(timeframe)
-        kw_list = [cleaned]
-
         from pytrends.request import TrendReq
 
         proxies: dict[str, str] | None = None
@@ -46,59 +85,68 @@ def get_daily_interest_single_keyword(keyword: str, timeframe: str) -> list[dict
             u = settings.trends_proxy_url.strip()
             proxies = {"http": u, "https": u}
 
-        pytrends = TrendReq(hl="en-US", tz=0, timeout=(10, 25), proxies=proxies, retries=1, backoff_factor=0.2)
-        pytrends.build_payload(kw_list, cat=0, timeframe=tf, geo="", gprop="")
-        bump_external("google_trends", 1)
-        df = pytrends.interest_over_time()
-
-        _sleep_rate_limit()
-
-        if df is None:
-            logger.info("pytrends empty df keyword=%s", cleaned[:80])
-            return []
-
-        try:
-            is_empty = bool(df.empty)
-        except Exception:
-            is_empty = True
-        if is_empty:
-            logger.info("pytrends empty df keyword=%s", cleaned[:80])
-            return []
-
-        try:
-            cols = list(df.columns)
-        except Exception:
-            cols = []
-        if "isPartial" in cols:
+        for term in candidates:
             try:
-                df = df.drop(columns=["isPartial"])
-                cols = [c for c in cols if c != "isPartial"]
+                pytrends = TrendReq(hl="en-US", tz=0, timeout=(10, 25), proxies=proxies, retries=1, backoff_factor=0.2)
+                pytrends.build_payload([term], cat=0, timeframe=tf, geo="", gprop="")
+                bump_external("google_trends", 1)
+                df = pytrends.interest_over_time()
+                _sleep_rate_limit()
+            except Exception as e:
+                logger.warning("pytrends failed keyword=%s err=%s", term[:80], str(e)[:200])
+                try:
+                    _sleep_rate_limit()
+                except Exception:
+                    pass
+                continue
+
+            if df is None:
+                logger.info("pytrends empty df keyword=%s", term[:80])
+                continue
+
+            try:
+                is_empty = bool(df.empty)
             except Exception:
-                pass
+                is_empty = True
+            if is_empty:
+                logger.info("pytrends empty df keyword=%s", term[:80])
+                continue
 
-        if cleaned not in cols:
-            logger.info("pytrends missing column keyword=%s cols=%s", cleaned[:80], cols[:10])
-            return []
-
-        out: list[dict[str, Any]] = []
-        try:
-            index_iter = list(df.index)
-        except Exception:
-            return []
-
-        for idx in index_iter:
             try:
-                cell = df.loc[idx, cleaned]
-                val = max(0.0, min(100.0, round(float(cell), 4)))
+                cols = list(df.columns)
+            except Exception:
+                cols = []
+            if "isPartial" in cols:
+                try:
+                    df = df.drop(columns=["isPartial"])
+                    cols = [c for c in cols if c != "isPartial"]
+                except Exception:
+                    pass
+
+            if term not in cols:
+                logger.info("pytrends missing column keyword=%s cols=%s", term[:80], cols[:10])
+                continue
+
+            out: list[dict[str, Any]] = []
+            try:
+                index_iter = list(df.index)
             except Exception:
                 continue
-            if hasattr(idx, "strftime"):
-                ds = idx.strftime("%Y-%m-%d")
-            else:
-                ds = str(idx)[:10]
-            out.append({"date": ds, "value": val})
 
-        return out
+            for idx in index_iter:
+                try:
+                    cell = df.loc[idx, term]
+                    val = max(0.0, min(100.0, round(float(cell), 4)))
+                except Exception:
+                    continue
+                if hasattr(idx, "strftime"):
+                    ds = idx.strftime("%Y-%m-%d")
+                else:
+                    ds = str(idx)[:10]
+                out.append({"date": ds, "value": val})
+            if out:
+                return out
+        return []
     except Exception as e:
         logger.warning("pytrends failed keyword=%s err=%s", cleaned[:80], str(e)[:200])
         try:

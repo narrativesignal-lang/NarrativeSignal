@@ -64,6 +64,13 @@ class Settings(BaseSettings):
 
     # Twelve Data (optional): market search / quote / time_series
     twelve_api_key: str | None = None
+    # Twelve global limiter (all code paths): at most 1 request / 10s and 6 / minute.
+    twelve_global_min_interval_seconds: float = 10.0
+    twelve_global_max_per_minute: int = 6
+
+    # Worker task guards to avoid same-minute provider bursts.
+    twelve_task_guard_seconds: int = 45
+    twelve_secondary_skip_after_primary_seconds: int = 300
 
     # Startup warmups (API process): when enabled, may trigger external provider calls in background.
     # Local development default should be False to avoid rate-limit collisions.

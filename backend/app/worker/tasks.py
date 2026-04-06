@@ -6,9 +6,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import feedparser
+import redis
 from croniter import croniter
 
 from app.core.platform_tz import now_platform
+from app.core.config import settings
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
@@ -78,6 +80,9 @@ _MARKET_REFRESH_BATCH_SIZE = 3
 _MARKET_REFRESH_INTER_BATCH_SLEEP_SEC = 2.0
 _MASSIVE_LIGHT_ENTITY_LIMIT = 20
 MASSIVE_BACKFILL_BATCH_SIZE = 5
+_TASK_GUARD_PREFIX = "market:v1:task_guard:"
+_PRIMARY_MARKET_QUOTES_TS = "market:v1:refresh_market_quotes:last_run_ts"
+_INPROC_GUARD: dict[str, float] = {}
 
 
 def _rtlog(
@@ -115,6 +120,61 @@ def _symbol_batches(symbols: list[str], batch_size: int = _MARKET_REFRESH_BATCH_
     if not symbols:
         return []
     return [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
+
+
+def _tasks_r() -> redis.Redis:
+    return redis.from_url(settings.redis_url, decode_responses=True)
+
+
+def _task_guard_seconds() -> int:
+    return int(max(0, int(getattr(settings, "twelve_task_guard_seconds", 45))))
+
+
+def _skip_after_primary_seconds() -> int:
+    return int(max(0, int(getattr(settings, "twelve_secondary_skip_after_primary_seconds", 300))))
+
+
+def _acquire_task_guard(task_name: str, min_seconds: int) -> bool:
+    """Best-effort run gate. True = run now, False = skip (recently started)."""
+    if min_seconds <= 0:
+        return True
+    key = f"{_TASK_GUARD_PREFIX}{task_name}"
+    ttl = max(5, int(min_seconds))
+    try:
+        ok = bool(_tasks_r().set(key, "1", nx=True, ex=ttl))
+        return ok
+    except Exception:
+        now = time.time()
+        last = float(_INPROC_GUARD.get(key) or 0.0)
+        if last and (now - last) < float(min_seconds):
+            return False
+        _INPROC_GUARD[key] = now
+        return True
+
+
+def _mark_primary_market_quotes_run() -> None:
+    now = time.time()
+    ttl = max(120, _skip_after_primary_seconds() * 2)
+    try:
+        _tasks_r().set(_PRIMARY_MARKET_QUOTES_TS, str(now), ex=ttl)
+    except Exception:
+        _INPROC_GUARD[_PRIMARY_MARKET_QUOTES_TS] = now
+
+
+def _primary_market_quotes_recent(max_age_seconds: int) -> bool:
+    if max_age_seconds <= 0:
+        return False
+    now = time.time()
+    try:
+        raw = _tasks_r().get(_PRIMARY_MARKET_QUOTES_TS)
+        if not raw:
+            return False
+        return (now - float(raw)) < float(max_age_seconds)
+    except Exception:
+        last = float(_INPROC_GUARD.get(_PRIMARY_MARKET_QUOTES_TS) or 0.0)
+        if not last:
+            return False
+        return (now - last) < float(max_age_seconds)
 
 
 def _refresh_market_snapshots_sync(symbols: list[str], *, ohlcv_periods: tuple[str, ...] | None = None) -> dict:
@@ -662,6 +722,30 @@ def warm_pool_twelve_quotes() -> dict:
     t0 = time.perf_counter()
     logger.info("warm_pool started scope=quotes count=%s", len(TWELVE_WARM_POOL_SYMBOLS))
     with SessionLocal() as db:
+        if not _acquire_task_guard("warm_pool_twelve_quotes", _task_guard_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="warm_pool_twelve_quotes",
+                provider="market_chain",
+                status="skipped",
+                message="recent_run_guard",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_run_guard"}
+        if _primary_market_quotes_recent(_skip_after_primary_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="warm_pool_twelve_quotes",
+                provider="market_chain",
+                status="skipped",
+                message="recent_primary_refresh",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_primary_refresh"}
         if not provider_enabled(db, RuntimeFlagKey.ENABLE_TWELVE_QUOTES):
             logger.info(
                 "job=warm_pool_quotes disabled_by_runtime_flag=1 runtime_flag_checked=%s runtime_flag_value=false provider_call_attempted=false next_natural_run_unchanged=true",
@@ -792,6 +876,30 @@ def refresh_active_pool_twelve_quotes() -> dict:
     logger.info("active_pool refresh started scope=quotes")
     stale_n = 0
     with SessionLocal() as db:
+        if not _acquire_task_guard("refresh_active_pool_twelve_quotes", _task_guard_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="refresh_active_pool_twelve_quotes",
+                provider="market_chain",
+                status="skipped",
+                message="recent_run_guard",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_run_guard"}
+        if _primary_market_quotes_recent(_skip_after_primary_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="refresh_active_pool_twelve_quotes",
+                provider="market_chain",
+                status="skipped",
+                message="recent_primary_refresh",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_primary_refresh"}
         stale_n = disable_stale_active_pool_entries(db)
         try:
             db.commit()
@@ -868,6 +976,18 @@ def refresh_market_quotes() -> dict:
     """
     t0 = time.perf_counter()
     with SessionLocal() as db:
+        if not _acquire_task_guard("refresh_market_quotes", _task_guard_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="refresh_market_quotes",
+                provider="market_chain",
+                status="skipped",
+                message="recent_run_guard",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_run_guard"}
         if not provider_enabled(db, RuntimeFlagKey.ENABLE_EXTERNAL_PROVIDERS):
             logger.info(
                 "job=refresh_market_quotes disabled_by_runtime_flag=1 runtime_flag_checked=%s runtime_flag_value=false provider_call_attempted=false next_natural_run_unchanged=true",
@@ -885,6 +1005,7 @@ def refresh_market_quotes() -> dict:
                 request_count=0,
             )
             return {"disabled_by_runtime_flag": True, "flag": RuntimeFlagKey.ENABLE_EXTERNAL_PROVIDERS}
+        _mark_primary_market_quotes_run()
         syms_sorted = sorted(collect_symbols_for_scheduled_market_refresh(db))
         stats = refresh_quotes_batch_with_fallback(db, syms_sorted, max_chunks_per_run=5)
         try:
@@ -925,6 +1046,18 @@ def refresh_market_ohlcv_snapshots() -> dict:
     """Periodic OHLCV snapshot fill (low frequency). Request handlers do not call providers."""
     t0 = time.perf_counter()
     with SessionLocal() as db:
+        if not _acquire_task_guard("refresh_market_ohlcv_snapshots", _task_guard_seconds()):
+            _rtlog(
+                db,
+                category="provider",
+                job_name="refresh_market_ohlcv_snapshots",
+                provider="market_chain",
+                status="skipped",
+                message="recent_run_guard",
+                no_provider_call=True,
+                request_count=0,
+            )
+            return {"skipped": True, "reason": "recent_run_guard"}
         if not provider_enabled(db, RuntimeFlagKey.ENABLE_EXTERNAL_PROVIDERS):
             logger.info(
                 "job=refresh_market_ohlcv_snapshots disabled_by_runtime_flag=1 runtime_flag_checked=%s runtime_flag_value=false provider_call_attempted=false next_natural_run_unchanged=true",

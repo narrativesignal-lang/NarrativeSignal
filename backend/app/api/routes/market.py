@@ -295,6 +295,7 @@ def time_series(
     lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else lu
     if not bars:
         data_source = "unavailable"
+        schedule_market_snapshot_refresh_for_symbols([sym])
     record_snapshot_hit("market_time_series")
     prov = (snap.provider_source if snap else None) or ("unavailable" if data_source == "unavailable" else "snapshot")
     payload = {"symbol": sym, "period": p, "provider": prov, "bars": bars}
@@ -324,6 +325,8 @@ def ohlcv(
     sym = symbol.upper()
     p = period.upper() if period else "1M"
     bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+    if not bars:
+        schedule_market_snapshot_refresh_for_symbols([sym])
     record_snapshot_hit("market_ohlcv")
     payload = {
         "symbol": sym,
@@ -356,8 +359,11 @@ def ohlcv_batch(body: OhlcvBatchBody, db: Session = Depends(get_db)) -> dict:
     items: dict[str, dict] = {}
     batch_stale = False
     latest: str | None = None
+    missing_symbols: list[str] = []
     for sym in unique_symbols:
         bars, snap, stale = resolve_ohlcv_bars(db, sym, p)
+        if not bars:
+            missing_symbols.append(sym)
         if stale:
             batch_stale = True
         lu = snap.last_success_at.isoformat() if snap and snap.last_success_at else None
@@ -371,6 +377,8 @@ def ohlcv_batch(body: OhlcvBatchBody, db: Session = Depends(get_db)) -> dict:
             "last_updated_at": lu,
             "stale": stale,
         }
+    if missing_symbols:
+        schedule_market_snapshot_refresh_for_symbols(missing_symbols)
     record_snapshot_hit("market_ohlcv_batch")
     payload = {"period": p, "items": items}
     return {

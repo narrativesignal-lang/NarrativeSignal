@@ -27,6 +27,7 @@ from app.services.twelve_data_service import get_quote as twelve_get_quote
 from app.services.twelve_data_service import get_quotes_batch as twelve_get_quotes_batch
 from app.services.twelve_data_service import get_time_series as twelve_get_time_series
 from app.services.twelve_data_service import is_twelve_configured
+from app.services.twelve_data_service import twelve_rate_limited_recent
 from app.services.twelve_symbol_support import is_twelve_supported_symbol
 from app.services.twelve_warm_pool import TWELVE_WARM_1M_INTERVAL
 from app.services.runtime_flags import RuntimeFlagKey, provider_enabled
@@ -104,9 +105,15 @@ def refresh_quotes_batch_with_fallback(
 
         # Stage 2: Yahoo batch for remaining
         yahoo_rows: dict[str, dict] = {}
-        if missing and yahoo_quotes_enabled:
+        twelve_cooling = bool(missing and twelve_rate_limited_recent())
+        if missing and yahoo_quotes_enabled and not twelve_cooling:
             request_count += 1
             yahoo_rows = fetch_batch_quotes_yahoo(missing)
+        elif missing and twelve_cooling:
+            logger.info(
+                "refresh_quotes_batch_with_fallback yahoo skipped due to recent twelve local rate limit chunk_size=%s",
+                len(missing),
+            )
 
         missing2 = [s for s in missing if not (yahoo_rows.get(s) and yahoo_rows[s].get("price") is not None)]
         if missing2:
@@ -265,7 +272,8 @@ def refresh_ohlcv_batch_with_fallback(db: Session, symbols: list[str], *, period
 
             # Stage 2: Yahoo (true batch)
             provider_stage = "yahoo"
-            if yahoo_enabled and missing_after_twelve:
+            twelve_cooling = bool(missing_after_twelve and twelve_rate_limited_recent())
+            if yahoo_enabled and missing_after_twelve and not twelve_cooling:
                 try:
                     request_count += 1
                     yahoo_map = fetch_batch_ohlcv_yahoo(missing_after_twelve, period=p)
@@ -288,6 +296,14 @@ def refresh_ohlcv_batch_with_fallback(db: Session, symbols: list[str], *, period
                         fallback_count,
                     )
                     yahoo_map = {s: [] for s in missing_after_twelve}
+            elif missing_after_twelve and twelve_cooling:
+                logger.info(
+                    "job=refresh_ohlcv_batch_with_fallback provider_stage=yahoo_skipped_recent_twelve_limit period=%s chunk_size=%s request_count=%s fallback_count=%s",
+                    p,
+                    len(missing_after_twelve),
+                    request_count,
+                    fallback_count,
+                )
             elif missing_after_twelve:
                 logger.info(
                     "job=refresh_ohlcv_batch_with_fallback provider_stage=%s period=%s chunk_size=%s skipped=1 request_count=%s fallback_count=%s",
@@ -651,7 +667,16 @@ def upsert_quote_from_fetch(db: Session, symbol: str) -> MarketQuoteSnapshot:
 
     if not twelve_live:
         # Fallback #1: Yahoo
-        if yahoo_provider_paused() and _quote_row_has_usable_snapshot(snap):
+        if twelve_routable and twelve_rate_limited_recent():
+            yahoo_skipped_cooldown = True
+            provider_selected = "yahoo_skipped_twelve_cooldown"
+            err = err or "twelve_rate_limited_recent"
+            logger.info(
+                "market_pipeline quote symbol=%s yahoo_skipped_due_to_recent_twelve_limit provider_selected=%s",
+                sym_norm,
+                provider_selected,
+            )
+        elif yahoo_provider_paused() and _quote_row_has_usable_snapshot(snap):
             yahoo_skipped_cooldown = True
             provider_selected = "yahoo_skipped_cooldown"
             err = None
@@ -825,16 +850,20 @@ def upsert_ohlcv_from_fetch(db: Session, symbol: str, period: str = "1M") -> Ohl
 
     if not twelve_live:
         # Fallback #1 Yahoo
-        try:
-            raw_bars, ohlcv_src = get_ohlcv(symbol=sym_norm, period=p, provider_name="yahoo")
-            bars_list = [_bar_to_dict(b) for b in raw_bars]
-            if bars_list:
+        if twelve_routable and twelve_rate_limited_recent():
+            provider_selected = "yahoo_skipped_twelve_cooldown"
+            err = err or "twelve_rate_limited_recent"
+        else:
+            try:
+                raw_bars, ohlcv_src = get_ohlcv(symbol=sym_norm, period=p, provider_name="yahoo")
+                bars_list = [_bar_to_dict(b) for b in raw_bars]
+                if bars_list:
+                    provider_selected = "yahoo"
+                    err = None
+            except Exception as e:
+                err = str(e)[:2000]
+                logger.warning("market_pipeline ohlcv symbol=%s period=%s stage=yahoo_exception err=%s", sym_norm, p, err)
                 provider_selected = "yahoo"
-                err = None
-        except Exception as e:
-            err = str(e)[:2000]
-            logger.warning("market_pipeline ohlcv symbol=%s period=%s stage=yahoo_exception err=%s", sym_norm, p, err)
-            provider_selected = "yahoo"
 
     # Fallback #2 fallback_provider adapter (currently market provider stack).
     if not twelve_live and not bars_list:
